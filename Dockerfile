@@ -12,6 +12,7 @@ COPY glb.patch /root
 COPY pcrep-fix.patch /root
 COPY whitelist.patch /root
 COPY git-remove.patch /root
+COPY dependencies-fix.patch /root
 
 RUN echo "Starting..."; \
   yum install --nogpgcheck -y https://dl.fedoraproject.org/pub/epel/6/x86_64/epel-release-6-8.noarch.rpm; \
@@ -45,6 +46,7 @@ RUN echo "Starting..."; \
   patch -p1 < /root/glb.patch; \
   patch -p1 < /root/pcrep-fix.patch; \
   patch -p1 < /root/git-remove.patch; \
+  patch -p1 < /root/dependencies-fix.patch; \
   bundle install --path=.bundle --binstubs; \
   sed -i "s%XXXX%$(ls -d /root/omnibus-gitlab/.bundle/ruby/*/bundler/gems/omnibus-* | grep -v software | sed 's|/root/omnibus-gitlab/.bundle/ruby/.*/bundler/gems/omnibus-||')%" /root/whitelist.patch; \
   patch -p1 < /root/whitelist.patch; \

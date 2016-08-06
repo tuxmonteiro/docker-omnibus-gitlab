@@ -1,0 +1,75 @@
+--- a/config/projects/gitlab.rb	2016-08-06 22:42:37.951745944 +0000
++++ b/config/projects/gitlab.rb	2016-08-06 22:49:06.577655157 +0000
+@@ -50,10 +50,9 @@
+ override :'chef-gem', version: '12.10.24'
+ override :cacerts, version: '2016.04.20', source: { md5: '782dcde8f5d53b1b9e888fdf113c42b9' }
+ override :pip, version: '7.1.2', source: { md5: '3823d2343d9f3aaab21cf9c917710196' }
+-override :redis, version: '3.2.1', source: { md5: 'b311d4332326f1e6f86a461b4025636d' }
+ override :liblzma, version: '5.2.2', source: { md5: '7cf6a8544a7dae8e8106fdf7addfa28c' }
+ override :libxml2, version: '2.9.4', source: { md5: 'ae249165c173b1ff386ee8ad676815f5' }
+-override :pcre, version: '8.38', source: { md5: '8a353fe1450216b6655dfcf3561716d9' }
++override :pcre, version: '8.38', source: { md5: '8a353fe1450216b6655dfcf3561716d9', url: "http://ufpr.dl.sourceforge.net/project/pcre/pcre/8.38/pcre-8.38.tar.gz" }
+ override :expat, version: '2.1.1', source: { md5: '7380a64a8e3a9d66a9887b01d0d7ea81', url: "http://iweb.dl.sourceforge.net/project/expat/expat/2.1.1/expat-2.1.1.tar.bz2" }
+ 
+ # Openssh needs to be installed
+@@ -68,13 +67,10 @@
+ dependency "preparation"
+ dependency "package-scripts"
+ 
+-dependency "redis"
+-dependency "nginx"
+ dependency "chef-zero"
+ dependency "ohai"
+ dependency "chef-gem"
+ dependency "remote-syslog" if ee
+-dependency "logrotate"
+ dependency "runit"
+ dependency "nodejs"
+ dependency "gitlab-rails"
+--- a/config/software/nginx.rb	2016-08-06 20:40:06.000000000 +0000
++++ b/dev/null	2016-08-06 22:41:22.900150014 +0000
+@@ -1,44 +0,0 @@
+-#
+-# Copyright:: Copyright (c) 2012-2014 Chef Software, Inc.
+-# Copyright:: Copyright (c) 2014 GitLab B.V.
+-# License:: Apache License, Version 2.0
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-#
+-
+-name "nginx"
+-default_version "1.9.12"
+-
+-dependency "pcre"
+-dependency "openssl"
+-
+-source url: "http://nginx.org/download/nginx-#{version}.tar.gz",
+-       md5: "0afe4a7e589a0de43b7b54aa055a4351"
+-
+-relative_path "nginx-#{version}"
+-
+-build do
+-  command ["./configure",
+-           "--prefix=#{install_dir}/embedded",
+-           "--with-http_ssl_module",
+-           "--with-http_stub_status_module",
+-           "--with-http_gzip_static_module",
+-           "--with-http_v2_module",
+-           "--with-http_realip_module",
+-           "--with-ipv6",
+-           "--with-debug",
+-           "--with-ld-opt=-L#{install_dir}/embedded/lib",
+-           "--with-cc-opt=\"-L#{install_dir}/embedded/lib -I#{install_dir}/embedded/include\""].join(" ")
+-  command "make -j #{workers}", :env => {"LD_RUN_PATH" => "#{install_dir}/embedded/lib"}
+-  command "make install"
+-end

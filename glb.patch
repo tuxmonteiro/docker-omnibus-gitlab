@@ -27,7 +27,6 @@ index 155d29f..3f5a18b 100644
 +runtime_dependency "libselinux"
 +runtime_dependency "krb5-libs"
 +runtime_dependency "sqlite"
-+runtime_dependency "git2u"
 +
  # creates required build directories
  dependency "preparation"
