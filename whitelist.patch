@@ -1,0 +1,23 @@
+--- a/.bundle/ruby/2.1.0/bundler/gems/omnibus-XXXX/lib/omnibus/health_check.rb	2016-08-06 17:49:35.224959245 +0000
++++ b/.bundle/ruby/2.1.0/bundler/gems/omnibus-XXXX/lib/omnibus/health_check.rb	2016-08-06 16:43:49.650985060 +0000
+@@ -34,7 +34,20 @@
+       /libstdc\+\+\.so/,
+       /libutil\.so/,
+       /linux-vdso.+/,
+       /linux-gate\.so/,
++      /libsqlite3.so/,
++      /libcom_err\.so/,
++      /libkrb5\.so/,
++      /libk5crypto\.so/,
++      /libkrb5support\.so/,
++      /libkeyutils\.so/,
++      /libselinux\.so/,
++      /libcom_err\.so/,
++      /libkrb5\.so/,
++      /libk5crypto\.so/,
++      /libkrb5support\.so/,
++      /libkeyutils\.so/,
++      /libselinux\.so/,
+     ].freeze
+ 
+     ARCH_WHITELIST_LIBS = [

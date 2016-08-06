@@ -1,0 +1,1996 @@
+diff --git a/config/projects/gitlab.rb b/config/projects/gitlab.rb
+index 155d29f..3f5a18b 100644
+--- a/config/projects/gitlab.rb
++++ b/config/projects/gitlab.rb
+@@ -29,7 +29,7 @@ if ee
+ else
+   name "gitlab-ce"
+   description "GitLab Community Edition and GitLab CI "\
+-    "(including NGINX, Postgres, Redis)"
++    "(including NGINX, Redis)"
+   replace        "gitlab-ee"
+   conflict        "gitlab-ee"
+ end
+@@ -51,7 +51,6 @@ override :'chef-gem', version: '12.10.24'
+ override :cacerts, version: '2016.04.20', source: { md5: '782dcde8f5d53b1b9e888fdf113c42b9' }
+ override :pip, version: '7.1.2', source: { md5: '3823d2343d9f3aaab21cf9c917710196' }
+ override :redis, version: '3.2.1', source: { md5: 'b311d4332326f1e6f86a461b4025636d' }
+-override :postgresql, version: '9.2.17', source: { md5: 'a75d4a82eae1edda04eda2e60656e74c' }
+ override :liblzma, version: '5.2.2', source: { md5: '7cf6a8544a7dae8e8106fdf7addfa28c' }
+ override :libxml2, version: '2.9.4', source: { md5: 'ae249165c173b1ff386ee8ad676815f5' }
+ override :pcre, version: '8.38', source: { md5: '8a353fe1450216b6655dfcf3561716d9' }
+@@ -60,11 +59,16 @@ override :expat, version: '2.1.1', source: { md5: '7380a64a8e3a9d66a9887b01d0d7e
+ # Openssh needs to be installed
+ runtime_dependency "openssh-server"
+ 
++# External libs
++runtime_dependency "libselinux"
++runtime_dependency "krb5-libs"
++runtime_dependency "sqlite"
++runtime_dependency "git2u"
++
+ # creates required build directories
+ dependency "preparation"
+ dependency "package-scripts"
+ 
+-dependency "git"
+ dependency "redis"
+ dependency "nginx"
+ dependency "chef-zero"
+@@ -78,7 +77,6 @@ dependency "gitlab-rails"
+ dependency "gitlab-shell"
+ dependency "gitlab-workhorse"
+ dependency "gitlab-ctl"
+-dependency "gitlab-psql"
+ dependency "gitlab-cookbooks"
+ dependency "gitlab-selinux"
+ dependency "gitlab-scripts"
+diff --git a/config/software/gitlab-psql.rb b/config/software/gitlab-psql.rb
+deleted file mode 100644
+index 9e42e1d..0000000
+--- a/config/software/gitlab-psql.rb
++++ /dev/null
+@@ -1,61 +0,0 @@
+-#
+-# Copyright:: Copyright (c) 2016 GitLab Inc.
+-# License:: Apache License, Version 2.0
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-#
+-
+-require 'digest'
+-
+-name "gitlab-psql"
+-
+-# This 'software' is self-contained in this file. Use the file contents
+-# to generate a version string.
+-default_version Digest::MD5.file(__FILE__).hexdigest
+-
+-build do
+-  block do
+-    open("#{install_dir}/bin/gitlab-psql", "w") do |file|
+-      file.print <<-EOH
+-#!/bin/sh
+-
+-error_echo()
+-{
+-  echo "$1" 2>& 1
+-}
+-
+-gitlab_psql_rc='/opt/gitlab/etc/gitlab-psql-rc'
+-
+-
+-if ! [ -f ${gitlab_psql_rc} ] ; then
+-  error_echo "$0 error: could not load ${gitlab_psql_rc}"
+-  error_echo "Either you are not allowed to read the file, or it does not exist yet."
+-  error_echo "You can generate it with:   sudo gitlab-ctl reconfigure"
+-  exit 1
+-fi
+-
+-. ${gitlab_psql_rc}
+-
+-if [ "$(id -n -u)" = "${psql_user}" ] ; then
+-  privilege_drop=''
+-else
+-  privilege_drop="-u ${psql_user}"
+-fi
+-
+-exec /opt/gitlab/embedded/bin/chpst ${privilege_drop} -U ${psql_user} /opt/gitlab/embedded/bin/psql -p ${psql_port} -h ${psql_host} "$@"
+-       EOH
+-    end
+-  end
+-
+-  command "chmod 755 #{install_dir}/bin/gitlab-psql"
+-end
+diff --git a/config/software/gitlab-rails.rb b/config/software/gitlab-rails.rb
+index 055afcd..1f08185 100644
+--- a/config/software/gitlab-rails.rb
++++ b/config/software/gitlab-rails.rb
+@@ -30,13 +30,11 @@ dependency "libxslt"
+ dependency "curl"
+ dependency "rsync"
+ dependency "libicu"
+-dependency "postgresql"
+ dependency "python-docutils"
+-dependency "krb5"
+ dependency "registry"
++dependency "mysql-client"
+ 
+ if EE
+-  dependency "mysql-client"
+   dependency "unzip"
+   dependency "gitlab-pages"
+ end
+@@ -54,15 +52,14 @@ build do
+   command "sed -i \"s/.*REVISION.*/REVISION = '$(git log --pretty=format:'%h' -n 1)'/\" config/initializers/2_app.rb"
+   command "echo $(git log --pretty=format:'%h' -n 1) > REVISION"
+ 
+-  bundle_without = %w{development test}
+-  bundle_without << "mysql" unless EE
++  bundle_without = %w{development test postgres aws kerbero}
+   bundle "config build.rugged --no-use-system-libraries", :env => env
+   bundle "install --without #{bundle_without.join(" ")} --path=#{install_dir}/embedded/service/gem --jobs #{workers} --retry 5", :env => env
+ 
+   # In order to precompile the assets, we need to get to a state where rake can
+   # load the Rails environment.
+   copy 'config/gitlab.yml.example', 'config/gitlab.yml'
+-  copy 'config/database.yml.postgresql', 'config/database.yml'
++  copy 'config/database.yml.mysql', 'config/database.yml'
+   copy 'config/secrets.yml.example', 'config/secrets.yml'
+ 
+   assets_precompile_env = {
+diff --git a/config/software/mysql-client.rb b/config/software/mysql-client.rb
+index d4c7a8b..b94ead0 100644
+--- a/config/software/mysql-client.rb
++++ b/config/software/mysql-client.rb
+@@ -16,14 +16,14 @@
+ # limitations under the License.
+ #
+ name "mysql-client"
+-default_version "5.5.37"
++default_version "5.6.31"
+ 
+ dependency "openssl"
+ dependency "zlib"
+ dependency "ncurses"
+ 
+-source  :url => "http://dev.mysql.com/get/Downloads/MySQL-5.5/mysql-5.5.37.tar.gz",
+-        :md5 => "bf1d80c66d4822ec6036300399a33c03"
++source  :url => "http://cdn.mysql.com/archives/mysql-5.6/mysql-5.6.31.tar.gz",
++        :md5 => "a2d1d89c85ee1f5b1059dbfc741f0b0d"
+ 
+ relative_path "mysql-#{version}"
+ 
+diff --git a/config/templates/package-scripts/postrm.erb b/config/templates/package-scripts/postrm.erb
+index d312c53..0af0413 100644
+--- a/config/templates/package-scripts/postrm.erb
++++ b/config/templates/package-scripts/postrm.erb
+@@ -18,7 +18,7 @@ else
+ fi
+ 
+ cleanup_symlinks() {
+-  binaries="gitlab-ctl gitlab-rake gitlab-rails gitlab-ci-rake gitlab-ci-rails gitlab-psql"
++  binaries="gitlab-ctl gitlab-rake gitlab-rails gitlab-ci-rake gitlab-ci-rails"
+   for binary in $binaries; do
+     rm -f $PREFIX/bin/$binary
+   done
+diff --git a/config/templates/package-scripts/preinst.erb b/config/templates/package-scripts/preinst.erb
+index 0243e7a..3bb5e3f 100644
+--- a/config/templates/package-scripts/preinst.erb
++++ b/config/templates/package-scripts/preinst.erb
+@@ -3,7 +3,7 @@
+ 
+ DEST_DIR=<%= install_dir %>
+ 
+-mkdir -p /var/log/gitlab/reconfigure
++mkdir -p /opt/logs/gitlab/reconfigure
+ 
+ skip_migrations_file=/etc/gitlab/skip-auto-migrations
+ 
+diff --git a/files/gitlab-config-template/gitlab.rb.template b/files/gitlab-config-template/gitlab.rb.template
+index 28b1815..28452fd 100644
+--- a/files/gitlab-config-template/gitlab.rb.template
++++ b/files/gitlab-config-template/gitlab.rb.template
+@@ -81,7 +81,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ # # The mailbox where incoming mail will end up. Usually "inbox".
+ # gitlab_rails['incoming_email_mailbox_name'] = "inbox"
+ #
+-# gitlab_rails['incoming_email_log_directory'] = "/var/log/gitlab/mailroom"
++# gitlab_rails['incoming_email_log_directory'] = "/opt/logs/gitlab/mailroom"
+ 
+ ## Build Artifacts
+ # gitlab_rails['artifacts_enabled'] = true
+@@ -249,7 +249,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ 
+ # We do not recommend changing these directories.
+ # gitlab_rails['dir'] = "/var/opt/gitlab/gitlab-rails"
+-# gitlab_rails['log_directory'] = "/var/log/gitlab/gitlab-rails"
++# gitlab_rails['log_directory'] = "/opt/logs/gitlab/gitlab-rails"
+ 
+ ###############################
+ # GitLab application settings #
+@@ -339,7 +339,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ # registry['uid'] = nil
+ # registry['gid'] = nil
+ # registry['dir'] = "/var/opt/gitlab/registry"
+-# registry['log_directory'] = "/var/log/gitlab/registry"
++# registry['log_directory'] = "/opt/logs/gitlab/registry"
+ # registry['log_level'] = "info"
+ # registry['rootcertbundle'] = "/var/opt/gitlab/registry/certificate.crt"
+ # registry['storage_delete_enabled'] = true
+@@ -366,7 +366,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ # gitlab_workhorse['auth_socket'] = "''" # the empty string is the default in gitlab-workhorse option parser
+ # gitlab_workhorse['pprof_listen_addr'] = "''" # put an empty string on the command line
+ # gitlab_workhorse['dir'] = "/var/opt/gitlab/gitlab-workhorse"
+-# gitlab_workhorse['log_directory'] = "/var/log/gitlab/gitlab-workhorse"
++# gitlab_workhorse['log_directory'] = "/opt/logs/gitlab/gitlab-workhorse"
+ # gitlab_workhorse['proxy_headers_timeout'] = "1m0s"
+ # gitlab_workhorse['env'] = {
+ #   'PATH' => "/opt/gitlab/bin:/opt/gitlab/embedded/bin:/bin:/usr/bin"
+@@ -408,7 +408,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ # Make sure somaxconn is equal or higher then backlog_socket
+ # unicorn['somaxconn'] = 1024
+ # We do not recommend changing this setting
+-# unicorn['log_directory'] = "/var/log/gitlab/unicorn"
++# unicorn['log_directory'] = "/opt/logs/gitlab/unicorn"
+ 
+ ## Only change these settings if you understand well what they mean
+ ## see https://about.gitlab.com/2015/06/05/how-gitlab-uses-unicorn-and-unicorn-worker-killer/
+@@ -421,7 +421,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ # GitLab Sidekiq #
+ ##################
+ 
+-# sidekiq['log_directory'] = "/var/log/gitlab/sidekiq"
++# sidekiq['log_directory'] = "/opt/logs/gitlab/sidekiq"
+ # sidekiq['shutdown_timeout'] = 4
+ # sidekiq['concurrency'] = 25
+ 
+@@ -433,7 +433,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ # gitlab_shell['audit_usernames'] = false
+ # gitlab_shell['log_level'] = 'INFO'
+ # gitlab_shell['http_settings'] = { user: 'username', password: 'password', ca_file: '/etc/ssl/cert.pem', ca_path: '/etc/pki/tls/certs', self_signed_cert: false}
+-# gitlab_shell['log_directory'] = "/var/log/gitlab/gitlab-shell/"
++# gitlab_shell['log_directory'] = "/opt/logs/gitlab/gitlab-shell/"
+ 
+ ## If enabled, git-annex needs to be installed on the server where gitlab is setup
+ # For Debian and Ubuntu systems this can be done with: sudo apt-get install git-annex
+@@ -453,7 +453,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ ## Advanced settings
+ # postgresql['ha'] = false
+ # postgresql['dir'] = "/var/opt/gitlab/postgresql"
+-# postgresql['log_directory'] = "/var/log/gitlab/postgresql"
++# postgresql['log_directory'] = "/opt/logs/gitlab/postgresql"
+ # postgresql['username'] = "gitlab-psql"
+ # postgresql['uid'] = nil
+ # postgresql['gid'] = nil
+@@ -566,7 +566,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ 
+ ## Advanced settings
+ # nginx['dir'] = "/var/opt/gitlab/nginx"
+-# nginx['log_directory'] = "/var/log/gitlab/nginx"
++# nginx['log_directory'] = "/opt/logs/gitlab/nginx"
+ # nginx['worker_processes'] = 4
+ # nginx['worker_connections'] = 10240
+ # nginx['log_format'] = '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"'
+@@ -709,7 +709,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ # mattermost['sql_max_open_conns'] = 10
+ # mattermost['sql_trace'] = false
+ 
+-# mattermost['log_file_directory'] = '/var/log/gitlab/mattermost'
++# mattermost['log_file_directory'] = '/opt/logs/gitlab/mattermost'
+ # mattermost['log_console_enable'] = true
+ # mattermost['log_console_level'] = 'INFO'
+ # mattermost['log_enable_file'] = false
+@@ -809,7 +809,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ 
+ ## Advanced settings
+ # mattermost_nginx['dir'] = "/var/opt/gitlab/nginx"
+-# mattermost_nginx['log_directory'] = "/var/log/gitlab/nginx"
++# mattermost_nginx['log_directory'] = "/opt/logs/gitlab/nginx"
+ # mattermost_nginx['worker_processes'] = 4
+ # mattermost_nginx['worker_connections'] = 10240
+ # mattermost_nginx['sendfile'] = 'on'
+@@ -837,7 +837,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ # gitlab_pages['redirect_http'] = true
+ # gitlab_pages['use_http2'] = true
+ # gitlab_pages['dir'] = "/var/opt/gitlab/gitlab-pages"
+-# gitlab_pages['log_directory'] = "/var/log/gitlab/gitlab-pages"
++# gitlab_pages['log_directory'] = "/opt/logs/gitlab/gitlab-pages"
+ 
+ ######################
+ # GitLab Pages NGINX #
+@@ -861,7 +861,7 @@ external_url 'GENERATED_EXTERNAL_URL'
+ 
+ ## Advanced settings
+ # pages_nginx['dir'] = "/var/opt/gitlab/nginx"
+-# pages_nginx['log_directory'] = "/var/log/gitlab/nginx"
++# pages_nginx['log_directory'] = "/opt/logs/gitlab/nginx"
+ 
+ ##################
+ # Registry NGINX #
+diff --git a/files/gitlab-cookbooks/gitlab/attributes/default.rb b/files/gitlab-cookbooks/gitlab/attributes/default.rb
+index 2329462..6cd60e7 100644
+--- a/files/gitlab-cookbooks/gitlab/attributes/default.rb
++++ b/files/gitlab-cookbooks/gitlab/attributes/default.rb
+@@ -41,7 +41,7 @@ default['gitlab']['user']['gid'] = nil
+ # The shell for the chef services user
+ default['gitlab']['user']['shell'] = "/bin/sh"
+ # The home directory for the chef services user
+-default['gitlab']['user']['home'] = "/var/opt/gitlab"
++default['gitlab']['user']['home'] = "/opt/gitlab/var"
+ default['gitlab']['user']['git_user_name'] = "GitLab"
+ default['gitlab']['user']['git_user_email'] = "gitlab@#{node['fqdn']}"
+ 
+@@ -50,8 +50,8 @@ default['gitlab']['user']['git_user_email'] = "gitlab@#{node['fqdn']}"
+ # GitLab Rails app
+ ####
+ default['gitlab']['gitlab-rails']['enable'] = true
+-default['gitlab']['gitlab-rails']['dir'] = "/var/opt/gitlab/gitlab-rails"
+-default['gitlab']['gitlab-rails']['log_directory'] = "/var/log/gitlab/gitlab-rails"
++default['gitlab']['gitlab-rails']['dir'] = "/opt/gitlab/var/gitlab-rails"
++default['gitlab']['gitlab-rails']['log_directory'] = "/opt/logs/gitlab/gitlab-rails"
+ default['gitlab']['gitlab-rails']['environment'] = 'production'
+ default['gitlab']['gitlab-rails']['env'] = {
+   'SIDEKIQ_MEMORY_KILLER_MAX_RSS' => '1000000',
+@@ -64,7 +64,7 @@ default['gitlab']['gitlab-rails']['env'] = {
+ }
+ 
+ default['gitlab']['gitlab-rails']['internal_api_url'] = nil
+-default['gitlab']['gitlab-rails']['uploads_directory'] = "/var/opt/gitlab/gitlab-rails/uploads"
++default['gitlab']['gitlab-rails']['uploads_directory'] = "/opt/gitlab/var/gitlab-rails/uploads"
+ default['gitlab']['gitlab-rails']['rate_limit_requests_per_period'] = 10
+ default['gitlab']['gitlab-rails']['rate_limit_period'] = 60
+ 
+@@ -168,16 +168,16 @@ default['gitlab']['gitlab-rails']['omniauth_external_providers'] = nil
+ default['gitlab']['gitlab-rails']['omniauth_providers'] = []
+ default['gitlab']['gitlab-rails']['bitbucket'] = nil
+ 
+-default['gitlab']['gitlab-rails']['shared_path'] = "/var/opt/gitlab/gitlab-rails/shared"
++default['gitlab']['gitlab-rails']['shared_path'] = "/opt/gitlab/var/gitlab-rails/shared"
+ 
+ # Important: keep the satellites.path setting until GitLab 9.0 at
+ # least. This setting is fed to 'rm -rf' in
+ # db/migrate/20151023144219_remove_satellites.rb
+-default['gitlab']['gitlab-rails']['satellites_path'] = "/var/opt/gitlab/git-data/gitlab-satellites"
++default['gitlab']['gitlab-rails']['satellites_path'] = "/opt/gitlab/var/git-data/gitlab-satellites"
+ default['gitlab']['gitlab-rails']['satellites_timeout'] = nil
+ #
+ 
+-default['gitlab']['gitlab-rails']['backup_path'] = "/var/opt/gitlab/backups"
++default['gitlab']['gitlab-rails']['backup_path'] = "/opt/gitlab/var/backups"
+ default['gitlab']['gitlab-rails']['manage_backup_path'] = true
+ default['gitlab']['gitlab-rails']['backup_archive_permissions'] = nil
+ default['gitlab']['gitlab-rails']['backup_pg_schema'] = nil
+@@ -211,16 +211,16 @@ default['gitlab']['gitlab-rails']['aws_secret_access_key'] = nil
+ default['gitlab']['gitlab-rails']['aws_bucket'] = nil
+ default['gitlab']['gitlab-rails']['aws_region'] = nil
+ 
+-default['gitlab']['gitlab-rails']['db_adapter'] = "postgresql"
++default['gitlab']['gitlab-rails']['db_adapter'] = "mysql2"
+ default['gitlab']['gitlab-rails']['db_encoding'] = "unicode"
+ default['gitlab']['gitlab-rails']['db_collation'] = nil
+ default['gitlab']['gitlab-rails']['db_database'] = "gitlabhq_production"
+ default['gitlab']['gitlab-rails']['db_pool'] = 10
+ default['gitlab']['gitlab-rails']['db_username'] = "gitlab"
+ default['gitlab']['gitlab-rails']['db_password'] = nil
+-# Path to postgresql socket directory
+-default['gitlab']['gitlab-rails']['db_host'] = "/var/opt/gitlab/postgresql"
+-default['gitlab']['gitlab-rails']['db_port'] = 5432
++
++default['gitlab']['gitlab-rails']['db_host'] = "127.0.0.1"
++default['gitlab']['gitlab-rails']['db_port'] = 3306
+ default['gitlab']['gitlab-rails']['db_socket'] = nil
+ default['gitlab']['gitlab-rails']['db_sslmode'] = nil
+ default['gitlab']['gitlab-rails']['db_sslrootcert'] = nil
+@@ -229,7 +229,7 @@ default['gitlab']['gitlab-rails']['db_sslca'] = nil
+ default['gitlab']['gitlab-rails']['redis_host'] = "127.0.0.1"
+ default['gitlab']['gitlab-rails']['redis_port'] = nil
+ default['gitlab']['gitlab-rails']['redis_password'] = nil
+-default['gitlab']['gitlab-rails']['redis_socket'] = "/var/opt/gitlab/redis/redis.socket"
++default['gitlab']['gitlab-rails']['redis_socket'] = "/opt/gitlab/var/redis/redis.socket"
+ 
+ default['gitlab']['gitlab-rails']['smtp_enable'] = false
+ default['gitlab']['gitlab-rails']['smtp_address'] = nil
+@@ -261,7 +261,7 @@ default['gitlab']['gitlab-rails']['trusted_proxies'] = nil
+ ####
+ default['gitlab']['unicorn']['enable'] = true
+ default['gitlab']['unicorn']['ha'] = false
+-default['gitlab']['unicorn']['log_directory'] = "/var/log/gitlab/unicorn"
++default['gitlab']['unicorn']['log_directory'] = "/opt/logs/gitlab/unicorn"
+ default['gitlab']['unicorn']['worker_processes'] = [
+   2, # Two is the minimum or web editor will no longer work.
+   [
+@@ -273,8 +273,8 @@ default['gitlab']['unicorn']['worker_processes'] = [
+   ].min # min because we want to exceed neither CPU nor RAM
+ ].max # max because we need at least 2 workers
+ default['gitlab']['unicorn']['listen'] = '127.0.0.1'
+-default['gitlab']['unicorn']['port'] = 8080
+-default['gitlab']['unicorn']['socket'] = '/var/opt/gitlab/gitlab-rails/sockets/gitlab.socket'
++default['gitlab']['unicorn']['port'] = 8081
++default['gitlab']['unicorn']['socket'] = '/opt/gitlab/var/gitlab-rails/sockets/gitlab.socket'
+ # Path to the unicorn server Process ID file
+ # defaults to /opt/gitlab/var/unicorn/unicorn.pid. The install-dir path is set at build time
+ default['gitlab']['unicorn']['pidfile'] = "#{node['package']['install-dir']}/var/unicorn/unicorn.pid"
+@@ -290,7 +290,7 @@ default['gitlab']['unicorn']['worker_memory_limit_max'] = "650 * 1 << 20"
+ ####
+ default['gitlab']['sidekiq']['enable'] = true
+ default['gitlab']['sidekiq']['ha'] = false
+-default['gitlab']['sidekiq']['log_directory'] = "/var/log/gitlab/sidekiq"
++default['gitlab']['sidekiq']['log_directory'] = "/opt/logs/gitlab/sidekiq"
+ default['gitlab']['sidekiq']['shutdown_timeout'] = 4
+ default['gitlab']['sidekiq']['concurrency'] = 25
+ 
+@@ -298,14 +298,14 @@ default['gitlab']['sidekiq']['concurrency'] = 25
+ ###
+ # gitlab-shell
+ ###
+-default['gitlab']['gitlab-shell']['log_directory'] = "/var/log/gitlab/gitlab-shell/"
++default['gitlab']['gitlab-shell']['log_directory'] = "/opt/logs/gitlab/gitlab-shell/"
+ default['gitlab']['gitlab-shell']['log_level'] = nil
+ default['gitlab']['gitlab-shell']['audit_usernames'] = nil
+ default['gitlab']['gitlab-shell']['git_data_directories'] = {
+-  "default" => "/var/opt/gitlab/git-data"
++  "default" => "/opt/gitlab/var/git-data"
+ }
+ default['gitlab']['gitlab-rails']['repositories_storages'] = {
+-  "default" => "/var/opt/gitlab/git-data/repositories"
++  "default" => "/opt/gitlab/var/git-data/repositories"
+ }
+ default['gitlab']['gitlab-shell']['http_settings'] = nil
+ default['gitlab']['gitlab-shell']['git_annex_enabled'] = nil
+@@ -314,17 +314,17 @@ default['gitlab']['gitlab-shell']['git_annex_enabled'] = nil
+ ###
+ # PostgreSQL
+ ###
+-default['gitlab']['postgresql']['enable'] = true
++default['gitlab']['postgresql']['enable'] = false
+ default['gitlab']['postgresql']['ha'] = false
+-default['gitlab']['postgresql']['dir'] = "/var/opt/gitlab/postgresql"
+-default['gitlab']['postgresql']['data_dir'] = "/var/opt/gitlab/postgresql/data"
+-default['gitlab']['postgresql']['log_directory'] = "/var/log/gitlab/postgresql"
+-default['gitlab']['postgresql']['unix_socket_directory'] = "/var/opt/gitlab/postgresql"
++default['gitlab']['postgresql']['dir'] = "/opt/gitlab/var/postgresql"
++default['gitlab']['postgresql']['data_dir'] = "/opt/gitlab/var/postgresql/data"
++default['gitlab']['postgresql']['log_directory'] = "/opt/logs/gitlab/postgresql"
++default['gitlab']['postgresql']['unix_socket_directory'] = "/opt/gitlab/var/postgresql"
+ default['gitlab']['postgresql']['username'] = "gitlab-psql"
+ default['gitlab']['postgresql']['uid'] = nil
+ default['gitlab']['postgresql']['gid'] = nil
+ default['gitlab']['postgresql']['shell'] = "/bin/sh"
+-default['gitlab']['postgresql']['home'] = "/var/opt/gitlab/postgresql"
++default['gitlab']['postgresql']['home'] = "/opt/gitlab/var/postgresql"
+ # Postgres User's Environment Path
+ # defaults to /opt/gitlab/embedded/bin:/opt/gitlab/bin/$PATH. The install-dir path is set at build time
+ default['gitlab']['postgresql']['user_path'] = "#{node['package']['install-dir']}/embedded/bin:#{node['package']['install-dir']}/bin:$PATH"
+@@ -387,20 +387,20 @@ default['gitlab']['postgresql']['hot_standby'] = "off"
+ ####
+ default['gitlab']['redis']['enable'] = true
+ default['gitlab']['redis']['ha'] = false
+-default['gitlab']['redis']['dir'] = "/var/opt/gitlab/redis"
+-default['gitlab']['redis']['log_directory'] = "/var/log/gitlab/redis"
++default['gitlab']['redis']['dir'] = "/opt/gitlab/var/redis"
++default['gitlab']['redis']['log_directory'] = "/opt/logs/gitlab/redis"
+ default['gitlab']['redis']['username'] = "gitlab-redis"
+ default['gitlab']['redis']['uid'] = nil
+ default['gitlab']['redis']['gid'] = nil
+ default['gitlab']['redis']['shell'] = "/bin/nologin"
+-default['gitlab']['redis']['home'] = "/var/opt/gitlab/redis"
++default['gitlab']['redis']['home'] = "/opt/gitlab/var/redis"
+ default['gitlab']['redis']['bind'] = '127.0.0.1'
+ default['gitlab']['redis']['port'] = 0
+ default['gitlab']['redis']['maxclients'] = "10000"
+ default['gitlab']['redis']['tcp_timeout'] = 60
+ default['gitlab']['redis']['tcp_keepalive'] = 300
+ default['gitlab']['redis']['password'] = nil
+-default['gitlab']['redis']['unixsocket'] = "/var/opt/gitlab/redis/redis.socket"
++default['gitlab']['redis']['unixsocket'] = "/opt/gitlab/var/redis/redis.socket"
+ default['gitlab']['redis']['unixsocketperm'] = "777"
+ 
+ ####
+@@ -412,7 +412,7 @@ default['gitlab']['web-server']['group'] = 'gitlab-www'
+ default['gitlab']['web-server']['uid'] = nil
+ default['gitlab']['web-server']['gid'] = nil
+ default['gitlab']['web-server']['shell'] = '/bin/false'
+-default['gitlab']['web-server']['home'] = '/var/opt/gitlab/nginx'
++default['gitlab']['web-server']['home'] = '/opt/gitlab/var/nginx'
+ # When bundled nginx is disabled we need to add the external webserver user to the GitLab webserver group
+ default['gitlab']['web-server']['external_users'] = []
+ 
+@@ -424,12 +424,12 @@ default['gitlab']['gitlab-workhorse']['enable'] = true
+ default['gitlab']['gitlab-workhorse']['ha'] = false
+ default['gitlab']['gitlab-workhorse']['listen_network'] = "unix"
+ default['gitlab']['gitlab-workhorse']['listen_umask'] = 000
+-default['gitlab']['gitlab-workhorse']['listen_addr'] = "/var/opt/gitlab/gitlab-workhorse/socket"
+-default['gitlab']['gitlab-workhorse']['auth_backend'] = "http://localhost:8080"
++default['gitlab']['gitlab-workhorse']['listen_addr'] = "/opt/gitlab/var/gitlab-workhorse/socket"
++default['gitlab']['gitlab-workhorse']['auth_backend'] = "http://localhost:8081"
+ default['gitlab']['gitlab-workhorse']['auth_socket'] = "''" # the empty string is the default in gitlab-workhorse option parser
+ default['gitlab']['gitlab-workhorse']['pprof_listen_addr'] = "''" # put an empty string on the command line
+-default['gitlab']['gitlab-workhorse']['dir'] = "/var/opt/gitlab/gitlab-workhorse"
+-default['gitlab']['gitlab-workhorse']['log_directory'] = "/var/log/gitlab/gitlab-workhorse"
++default['gitlab']['gitlab-workhorse']['dir'] = "/opt/gitlab/var/gitlab-workhorse"
++default['gitlab']['gitlab-workhorse']['log_directory'] = "/opt/logs/gitlab/gitlab-workhorse"
+ default['gitlab']['gitlab-workhorse']['proxy_headers_timeout'] = nil
+ default['gitlab']['gitlab-workhorse']['env'] = {
+   'PATH' => "#{node['package']['install-dir']}/bin:#{node['package']['install-dir']}/embedded/bin:/bin:/usr/bin"
+@@ -441,7 +441,7 @@ default['gitlab']['gitlab-workhorse']['env'] = {
+ 
+ default['gitlab']['mailroom']['enable'] = false
+ default['gitlab']['mailroom']['ha'] = false
+-default['gitlab']['mailroom']['log_directory'] = "/var/log/gitlab/mailroom"
++default['gitlab']['mailroom']['log_directory'] = "/opt/logs/gitlab/mailroom"
+ 
+ ####
+ # GitLab Pages Daemon
+@@ -456,8 +456,8 @@ default['gitlab']['gitlab-pages']['cert'] = nil
+ default['gitlab']['gitlab-pages']['cert_key'] = nil
+ default['gitlab']['gitlab-pages']['redirect_http'] = true
+ default['gitlab']['gitlab-pages']['use_http2'] = true
+-default['gitlab']['gitlab-pages']['dir'] = "/var/opt/gitlab/gitlab-pages"
+-default['gitlab']['gitlab-pages']['log_directory'] = "/var/log/gitlab/gitlab-pages"
++default['gitlab']['gitlab-pages']['dir'] = "/opt/gitlab/var/gitlab-pages"
++default['gitlab']['gitlab-pages']['log_directory'] = "/opt/logs/gitlab/gitlab-pages"
+ 
+ ####
+ # Registry
+@@ -467,8 +467,8 @@ default['gitlab']['registry']['username'] = "registry"
+ default['gitlab']['registry']['group'] = "registry"
+ default['gitlab']['registry']['uid'] = nil
+ default['gitlab']['registry']['gid'] = nil
+-default['gitlab']['registry']['dir'] = "/var/opt/gitlab/registry"
+-default['gitlab']['registry']['log_directory'] = "/var/log/gitlab/registry"
++default['gitlab']['registry']['dir'] = "/opt/gitlab/var/registry"
++default['gitlab']['registry']['log_directory'] = "/opt/logs/gitlab/registry"
+ default['gitlab']['registry']['log_level'] = "info"
+ default['gitlab']['registry']['rootcertbundle'] = nil
+ default['gitlab']['registry']['storage_delete_enabled'] = true
+@@ -477,10 +477,10 @@ default['gitlab']['registry']['storage'] = nil
+ ####
+ # Nginx
+ ####
+-default['gitlab']['nginx']['enable'] = true
++default['gitlab']['nginx']['enable'] = false
+ default['gitlab']['nginx']['ha'] = false
+-default['gitlab']['nginx']['dir'] = "/var/opt/gitlab/nginx"
+-default['gitlab']['nginx']['log_directory'] = "/var/log/gitlab/nginx"
++default['gitlab']['nginx']['dir'] = "/opt/gitlab/var/nginx"
++default['gitlab']['nginx']['log_directory'] = "/opt/logs/gitlab/nginx"
+ default['gitlab']['nginx']['worker_processes'] = node['cpu']['total'].to_i
+ default['gitlab']['nginx']['worker_connections'] = 10240
+ default['gitlab']['nginx']['log_format'] = '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"' #  NGINX 'combined' format
+@@ -554,19 +554,19 @@ default['gitlab']['logging']['logrotate_dateformat'] = nil # use date extensions
+ ###
+ default['gitlab']['remote-syslog']['enable'] = false
+ default['gitlab']['remote-syslog']['ha'] = false
+-default['gitlab']['remote-syslog']['dir'] = "/var/opt/gitlab/remote-syslog"
+-default['gitlab']['remote-syslog']['log_directory'] = "/var/log/gitlab/remote-syslog"
++default['gitlab']['remote-syslog']['dir'] = "/opt/gitlab/var/remote-syslog"
++default['gitlab']['remote-syslog']['log_directory'] = "/opt/logs/gitlab/remote-syslog"
+ default['gitlab']['remote-syslog']['destination_host'] = "localhost"
+ default['gitlab']['remote-syslog']['destination_port'] = 514
+-default['gitlab']['remote-syslog']['services'] = %w{redis nginx unicorn gitlab-rails gitlab-shell postgresql sidekiq gitlab-workhorse gitlab-pages}
++default['gitlab']['remote-syslog']['services'] = %w{redis nginx unicorn gitlab-rails gitlab-shell sidekiq gitlab-workhorse gitlab-pages}
+ 
+ ###
+ # Logrotate
+ ###
+-default['gitlab']['logrotate']['enable'] = true
++default['gitlab']['logrotate']['enable'] = false
+ default['gitlab']['logrotate']['ha'] = false
+-default['gitlab']['logrotate']['dir'] = "/var/opt/gitlab/logrotate"
+-default['gitlab']['logrotate']['log_directory'] = "/var/log/gitlab/logrotate"
++default['gitlab']['logrotate']['dir'] = "/opt/gitlab/opt/logsrotate"
++default['gitlab']['logrotate']['log_directory'] = "/opt/logs/gitlab/logrotate"
+ default['gitlab']['logrotate']['services'] = %w{nginx unicorn gitlab-rails gitlab-shell gitlab-workhorse gitlab-pages}
+ default['gitlab']['logrotate']['pre_sleep'] = 600 # sleep 10 minutes before rotating after start-up
+ default['gitlab']['logrotate']['post_sleep'] = 3000 # wait 50 minutes after rotating
+@@ -580,9 +580,9 @@ default['gitlab']['high-availability']['mountpoint'] = nil
+ # GitLab CI Rails app
+ ####
+ default['gitlab']['gitlab-ci']['enable'] = false
+-default['gitlab']['gitlab-ci']['dir'] = "/var/opt/gitlab/gitlab-ci"
+-default['gitlab']['gitlab-ci']['log_directory'] = "/var/log/gitlab/gitlab-ci"
+-default['gitlab']['gitlab-ci']['builds_directory'] = "/var/opt/gitlab/gitlab-ci/builds"
++default['gitlab']['gitlab-ci']['dir'] = "/opt/gitlab/var/gitlab-ci"
++default['gitlab']['gitlab-ci']['log_directory'] = "/opt/logs/gitlab/gitlab-ci"
++default['gitlab']['gitlab-ci']['builds_directory'] = "/opt/gitlab/var/gitlab-ci/builds"
+ default['gitlab']['gitlab-ci']['environment'] = 'production'
+ default['gitlab']['gitlab-ci']['env'] = {
+   # Path the the GitLab CI Gemfile
+@@ -619,28 +619,28 @@ default['gitlab']['gitlab-ci']['gravatar_plain_url'] = nil
+ default['gitlab']['gitlab-ci']['gravatar_ssl_url'] = nil
+ 
+ # application.yml, backup section
+-default['gitlab']['gitlab-ci']['backup_path'] = "/var/opt/gitlab/ci-backups"
++default['gitlab']['gitlab-ci']['backup_path'] = "/opt/gitlab/var/ci-backups"
+ default['gitlab']['gitlab-ci']['backup_keep_time'] = nil
+ default['gitlab']['gitlab-ci']['backup_upload_connection'] = nil
+ default['gitlab']['gitlab-ci']['backup_upload_remote_directory'] = nil
+ default['gitlab']['gitlab-ci']['backup_multipart_chunk_size'] = nil
+ 
+ # database.yml settings
+-default['gitlab']['gitlab-ci']['db_adapter'] = "postgresql"
++default['gitlab']['gitlab-ci']['db_adapter'] = "mysql2"
+ default['gitlab']['gitlab-ci']['db_encoding'] = "unicode"
+ default['gitlab']['gitlab-ci']['db_database'] = "gitlab_ci_production"
+ default['gitlab']['gitlab-ci']['db_pool'] = 10
+ default['gitlab']['gitlab-ci']['db_username'] = "gitlab_ci"
+ default['gitlab']['gitlab-ci']['db_password'] = nil
+-# Path to postgresql socket directory
+-default['gitlab']['gitlab-ci']['db_host'] = "/var/opt/gitlab/postgresql"
+-default['gitlab']['gitlab-ci']['db_port'] = 5432
++
++default['gitlab']['gitlab-ci']['db_host'] = "127.0.0.1"
++default['gitlab']['gitlab-ci']['db_port'] = 3306
+ default['gitlab']['gitlab-ci']['db_socket'] = nil
+ 
+ # resque.yml settings
+ default['gitlab']['gitlab-ci']['redis_host'] = "127.0.0.1"
+ default['gitlab']['gitlab-ci']['redis_port'] = nil
+-default['gitlab']['gitlab-ci']['redis_socket'] = "/var/opt/gitlab/ci-redis/redis.socket"
++default['gitlab']['gitlab-ci']['redis_socket'] = "/opt/gitlab/var/ci-redis/redis.socket"
+ 
+ # config/initializers/smtp_settings.rb settings
+ default['gitlab']['gitlab-ci']['smtp_enable'] = false
+@@ -659,9 +659,9 @@ default['gitlab']['gitlab-ci']['smtp_openssl_verify_mode'] = nil
+ ####
+ default['gitlab']['ci-unicorn'] = default['gitlab']['unicorn'].dup
+ default['gitlab']['ci-unicorn']['enable'] = false
+-default['gitlab']['ci-unicorn']['log_directory'] = "/var/log/gitlab/ci-unicorn"
++default['gitlab']['ci-unicorn']['log_directory'] = "/opt/logs/gitlab/ci-unicorn"
+ default['gitlab']['ci-unicorn']['port'] = 8181
+-default['gitlab']['ci-unicorn']['socket'] = '/var/opt/gitlab/gitlab-ci/sockets/gitlab.socket'
++default['gitlab']['ci-unicorn']['socket'] = '/opt/gitlab/var/gitlab-ci/sockets/gitlab.socket'
+ # Path to the GitLab CI's Unicorn Process ID file
+ # defaults to /opt/gitlab/var/ci-unicorn/unicorn.pid. The install-dir path is set at build time
+ default['gitlab']['ci-unicorn']['pidfile'] = "#{node['package']['install-dir']}/var/ci-unicorn/unicorn.pid"
+@@ -671,16 +671,16 @@ default['gitlab']['ci-unicorn']['pidfile'] = "#{node['package']['install-dir']}/
+ ####
+ default['gitlab']['ci-sidekiq'] = default['gitlab']['sidekiq'].dup
+ default['gitlab']['ci-sidekiq']['enable'] = false
+-default['gitlab']['ci-sidekiq']['log_directory'] = "/var/log/gitlab/ci-sidekiq"
++default['gitlab']['ci-sidekiq']['log_directory'] = "/opt/logs/gitlab/ci-sidekiq"
+ 
+ ####
+ # CI Redis
+ ####
+ default['gitlab']['ci-redis'] = default['gitlab']['redis'].dup
+ default['gitlab']['ci-redis']['enable'] = false
+-default['gitlab']['ci-redis']['dir'] = "/var/opt/gitlab/ci-redis"
+-default['gitlab']['ci-redis']['log_directory'] = "/var/log/gitlab/ci-redis"
+-default['gitlab']['ci-redis']['unixsocket'] = "/var/opt/gitlab/ci-redis/redis.socket"
++default['gitlab']['ci-redis']['dir'] = "/opt/gitlab/var/ci-redis"
++default['gitlab']['ci-redis']['log_directory'] = "/opt/logs/gitlab/ci-redis"
++default['gitlab']['ci-redis']['unixsocket'] = "/opt/gitlab/var/ci-redis/redis.socket"
+ 
+ ####
+ # CI NGINX
+@@ -698,10 +698,10 @@ default['gitlab']['mattermost']['username'] = 'mattermost'
+ default['gitlab']['mattermost']['group'] = 'mattermost'
+ default['gitlab']['mattermost']['uid'] = nil
+ default['gitlab']['mattermost']['gid'] = nil
+-default['gitlab']['mattermost']['home'] = '/var/opt/gitlab/mattermost'
++default['gitlab']['mattermost']['home'] = '/opt/gitlab/var/mattermost'
+ default['gitlab']['mattermost']['database_name'] = 'mattermost_production'
+ 
+-default['gitlab']['mattermost']['log_file_directory'] = '/var/log/gitlab/mattermost'
++default['gitlab']['mattermost']['log_file_directory'] = '/opt/logs/gitlab/mattermost'
+ default['gitlab']['mattermost']['log_console_enable'] = true
+ default['gitlab']['mattermost']['log_enable_webhook_debugging'] = true
+ default['gitlab']['mattermost']['log_console_level'] = 'INFO'
+@@ -735,7 +735,7 @@ default['gitlab']['mattermost']['service_session_length_sso_in_days'] = 30
+ default['gitlab']['mattermost']['service_session_cache_in_minutes'] = 10
+ 
+ 
+-default['gitlab']['mattermost']['sql_driver_name'] = 'postgres'
++default['gitlab']['mattermost']['sql_driver_name'] = 'mysql'
+ default['gitlab']['mattermost']['sql_data_source'] = nil
+ default['gitlab']['mattermost']['sql_data_source_replicas'] = []
+ default['gitlab']['mattermost']['sql_max_idle_conns'] = 10
+@@ -747,7 +747,7 @@ default['gitlab']['mattermost']['gitlab'] = {}
+ 
+ default['gitlab']['mattermost']['file_max_file_size'] = 52428800
+ default['gitlab']['mattermost']['file_driver_name'] = "local"
+-default['gitlab']['mattermost']['file_directory'] = "/var/opt/gitlab/mattermost/data"
++default['gitlab']['mattermost']['file_directory'] = "/opt/gitlab/var/mattermost/data"
+ default['gitlab']['mattermost']['file_enable_public_link'] = true
+ default['gitlab']['mattermost']['file_thumbnail_width'] = 120
+ default['gitlab']['mattermost']['file_thumbnail_height'] = 100
+diff --git a/files/gitlab-cookbooks/gitlab/definitions/sysctl.rb b/files/gitlab-cookbooks/gitlab/definitions/sysctl.rb
+index 49b987e..f2ba69a 100644
+--- a/files/gitlab-cookbooks/gitlab/definitions/sysctl.rb
++++ b/files/gitlab-cookbooks/gitlab/definitions/sysctl.rb
+@@ -37,7 +37,6 @@ define :sysctl, value: nil do
+ 
+   # Remove old (not-used) configs
+   [
+-    "/etc/sysctl.d/90-postgresql.conf",
+     "/etc/sysctl.d/90-unicorn.conf",
+     "/opt/gitlab/embedded/etc/90-omnibus-gitlab.conf",
+     "/etc/sysctl.d/90-omnibus-gitlab.conf"
+diff --git a/files/gitlab-cookbooks/gitlab/libraries/gitlab.rb b/files/gitlab-cookbooks/gitlab/libraries/gitlab.rb
+index c73feb7..313809b 100644
+--- a/files/gitlab-cookbooks/gitlab/libraries/gitlab.rb
++++ b/files/gitlab-cookbooks/gitlab/libraries/gitlab.rb
+@@ -39,7 +39,6 @@ require_relative 'gitlab_workhorse.rb'
+ require_relative 'incoming_email.rb'
+ require_relative 'logging.rb'
+ require_relative 'nginx.rb'
+-require_relative 'postgresql.rb'
+ require_relative 'redis.rb'
+ require_relative 'registry.rb'
+ require_relative 'unicorn.rb'
+@@ -52,7 +51,6 @@ module Gitlab
+   manage_accounts Mash.new
+   manage_storage_directories Mash.new
+   user Mash.new
+-  postgresql Mash.new
+   redis Mash.new
+   ci_redis Mash.new
+   gitlab_rails Mash.new
+@@ -152,7 +150,6 @@ module Gitlab
+         "remote_syslog",
+         "logrotate",
+         "high_availability",
+-        "postgresql",
+         "web_server",
+         "mattermost",
+         "external_url",
+@@ -175,7 +172,6 @@ module Gitlab
+       GitlabRails.parse_variables
+       Logging.parse_variables
+       Redis.parse_variables
+-      Postgresql.parse_variables
+       Unicorn.parse_variables
+       GitlabCi.parse_variables
+       IncomingEmail.parse_variables
+diff --git a/files/gitlab-cookbooks/gitlab/libraries/helper.rb b/files/gitlab-cookbooks/gitlab/libraries/helper.rb
+index 98e0fad..aa3580b 100644
+--- a/files/gitlab-cookbooks/gitlab/libraries/helper.rb
++++ b/files/gitlab-cookbooks/gitlab/libraries/helper.rb
+@@ -45,42 +45,6 @@ module ShellOutHelper
+   end
+ end
+ 
+-class PgHelper
+-  include ShellOutHelper
+-  attr_reader :node
+-
+-  def initialize(node)
+-    @node = node
+-  end
+-
+-  def is_running?
+-    OmnibusHelper.service_up?("postgresql")
+-  end
+-
+-  def database_exists?(db_name)
+-    psql_cmd(["-d 'template1'",
+-              "-c 'select datname from pg_database' -A",
+-              "| grep -x #{db_name}"])
+-  end
+-
+-  def user_exists?(db_user)
+-    psql_cmd(["-d 'template1'",
+-              "-c 'select usename from pg_user' -A",
+-              "|grep -x #{db_user}"])
+-  end
+-
+-  def is_slave?
+-    psql_cmd(["-d 'template1'",
+-              "-c 'select pg_is_in_recovery()' -A",
+-              "|grep -x t"])
+-  end
+-
+-  def psql_cmd(cmd_list)
+-    cmd = ["/opt/gitlab/bin/gitlab-psql", cmd_list.join(" ")].join(" ")
+-    success?(cmd)
+-  end
+-end
+-
+ class OmnibusHelper
+   extend ShellOutHelper
+ 
+diff --git a/files/gitlab-cookbooks/gitlab/libraries/logging.rb b/files/gitlab-cookbooks/gitlab/libraries/logging.rb
+index 207c6b7..16c6387 100644
+--- a/files/gitlab-cookbooks/gitlab/libraries/logging.rb
++++ b/files/gitlab-cookbooks/gitlab/libraries/logging.rb
+@@ -43,7 +43,6 @@ module Logging
+         ci-sidekiq
+         unicorn
+         ci-unicorn
+-        postgresql
+         remote-syslog
+         gitlab-workhorse
+         mailroom
+diff --git a/files/gitlab-cookbooks/gitlab/libraries/postgresql.rb b/files/gitlab-cookbooks/gitlab/libraries/postgresql.rb
+deleted file mode 100644
+index f86e99e..0000000
+--- a/files/gitlab-cookbooks/gitlab/libraries/postgresql.rb
++++ /dev/null
+@@ -1,73 +0,0 @@
+-#
+-# Copyright:: Copyright (c) 2016 GitLab Inc.
+-# License:: Apache License, Version 2.0
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-#
+-
+-module Postgresql
+-  class << self
+-    def parse_variables
+-      parse_postgresql_settings
+-      parse_mattermost_postgresql_settings
+-    end
+-
+-    def parse_postgresql_settings
+-      # If the user wants to run the internal Postgres service using an alternative
+-      # DB username, host or port, then those settings should also be applied to
+-      # gitlab-rails and gitlab-ci.
+-      [
+-        # %w{gitlab_rails db_username} corresponds to
+-        # Gitlab['gitlab_rails']['db_username'], etc.
+-        [%w{gitlab_rails db_username}, %w{postgresql sql_user}],
+-        [%w{gitlab_rails db_host}, %w{postgresql listen_address}],
+-        [%w{gitlab_rails db_port}, %w{postgresql port}],
+-        [%w{gitlab_ci db_username}, %w{postgresql sql_ci_user}],
+-        [%w{gitlab_ci db_host}, %w{postgresql listen_address}],
+-        [%w{gitlab_ci db_port}, %w{postgresql port}],
+-      ].each do |left, right|
+-        if ! Gitlab[left.first][left.last].nil?
+-          # If the user explicitly sets a value for e.g.
+-          # gitlab_rails['db_port'] in gitlab.rb then we should never override
+-          # that.
+-          next
+-        end
+-
+-        better_value_from_gitlab_rb = Gitlab[right.first][right.last]
+-        default_from_attributes = Gitlab['node']['gitlab'][right.first.gsub('_', '-')][right.last]
+-        Gitlab[left.first][left.last] = better_value_from_gitlab_rb || default_from_attributes
+-      end
+-    end
+-
+-    def parse_mattermost_postgresql_settings
+-      value_from_gitlab_rb = Gitlab['mattermost']['sql_data_source']
+-
+-      attributes_values = []
+-      [
+-        %w{postgresql sql_mattermost_user},
+-        %w{postgresql unix_socket_directory},
+-        %w{postgresql port},
+-        %w{mattermost database_name}
+-      ].each do |value|
+-        attributes_values << (Gitlab[value.first][value.last] || Gitlab['node']['gitlab'][value.first][value.last])
+-      end
+-
+-      value_from_attributes = "user=#{attributes_values[0]} host=#{attributes_values[1]} port=#{attributes_values[2]} dbname=#{attributes_values[3]}"
+-      Gitlab['mattermost']['sql_data_source'] = value_from_gitlab_rb || value_from_attributes
+-
+-      if Gitlab['mattermost']['sql_data_source_replicas'].nil? && Gitlab['node']['gitlab']['mattermost']['sql_data_source_replicas'].empty?
+-        Gitlab['mattermost']['sql_data_source_replicas'] = [Gitlab['mattermost']['sql_data_source']]
+-      end
+-    end
+-  end
+-end
+diff --git a/files/gitlab-cookbooks/gitlab/recipes/database_migrations.rb b/files/gitlab-cookbooks/gitlab/recipes/database_migrations.rb
+index 2eda886..07bfdad 100644
+--- a/files/gitlab-cookbooks/gitlab/recipes/database_migrations.rb
++++ b/files/gitlab-cookbooks/gitlab/recipes/database_migrations.rb
+@@ -53,7 +53,6 @@ bash "migrate gitlab-rails database" do
+     exit $STATUS
+   EOH
+   environment ({'GITLAB_ROOT_PASSWORD' => initial_root_password }) if initial_root_password
+-  notifies :run, 'execute[enable pg_trgm extension]', :before unless OmnibusHelper.not_listening?("postgresql") || !node['gitlab']['postgresql']['enable']
+   notifies :run, "execute[clear the gitlab-rails cache]", :immediately unless OmnibusHelper.not_listening?("redis")
+   dependent_services.each do |svc|
+     notifies :restart, svc, :immediately
+diff --git a/files/gitlab-cookbooks/gitlab/recipes/default.rb b/files/gitlab-cookbooks/gitlab/recipes/default.rb
+index 8efc721..997103b 100644
+--- a/files/gitlab-cookbooks/gitlab/recipes/default.rb
++++ b/files/gitlab-cookbooks/gitlab/recipes/default.rb
+@@ -98,8 +98,7 @@ include_recipe "runit"
+ 
+ # Configure DB Services
+ [
+-  "redis",
+-  "postgresql" # Postgresql depends on Redis because of `rake db:seed_fu`
++  "redis"
+ ].each do |service|
+   if node["gitlab"][service]["enable"]
+     include_recipe "gitlab::#{service}"
+diff --git a/files/gitlab-cookbooks/gitlab/recipes/gitlab-rails.rb b/files/gitlab-cookbooks/gitlab/recipes/gitlab-rails.rb
+index 82fec72..1223234 100644
+--- a/files/gitlab-cookbooks/gitlab/recipes/gitlab-rails.rb
++++ b/files/gitlab-cookbooks/gitlab/recipes/gitlab-rails.rb
+@@ -122,7 +122,6 @@ dependent_services << "service[sidekiq]" if OmnibusHelper.should_notify?("sideki
+ dependent_services << "service[mailroom]" if node['gitlab']['mailroom']['enable']
+ 
+ redis_not_listening = OmnibusHelper.not_listening?("redis")
+-postgresql_not_listening = OmnibusHelper.not_listening?("postgresql")
+ 
+ template_symlink File.join(gitlab_rails_etc_dir, "secret") do
+   link_from File.join(gitlab_rails_source_dir, ".secret")
+diff --git a/files/gitlab-cookbooks/gitlab/recipes/mattermost.rb b/files/gitlab-cookbooks/gitlab/recipes/mattermost.rb
+index bdfb3d3..d8cf61e 100644
+--- a/files/gitlab-cookbooks/gitlab/recipes/mattermost.rb
++++ b/files/gitlab-cookbooks/gitlab/recipes/mattermost.rb
+@@ -75,19 +75,6 @@ mysql_adapter = node['gitlab']['mattermost']['sql_driver_name'] == 'mysql' ? tru
+ db_name = node['gitlab']['mattermost']['database_name']
+ sql_user = node['gitlab']['postgresql']['sql_mattermost_user']
+ 
+-execute "create #{sql_user} database user" do
+-  command "#{bin_dir}/psql --port #{pg_port} -h #{postgresql_socket_dir} -d template1 -c \"CREATE USER #{sql_user}\""
+-  user pg_user
+-  not_if { mysql_adapter || !pg_helper.is_running? || pg_helper.user_exists?(sql_user) }
+-end
+-
+-execute "create #{db_name} database" do
+-  command "#{bin_dir}/createdb --port #{pg_port} -h #{postgresql_socket_dir} -O #{sql_user} #{db_name}"
+-  user pg_user
+-  not_if { mysql_adapter || !pg_helper.is_running? || pg_helper.database_exists?(db_name) }
+-  retries 30
+-end
+-
+ ###
+ # Populate mattermost configuration options
+ ###
+diff --git a/files/gitlab-cookbooks/gitlab/recipes/postgresql.rb b/files/gitlab-cookbooks/gitlab/recipes/postgresql.rb
+deleted file mode 100644
+index 31cec15..0000000
+--- a/files/gitlab-cookbooks/gitlab/recipes/postgresql.rb
++++ /dev/null
+@@ -1,182 +0,0 @@
+-#
+-# Copyright:: Copyright (c) 2012 Opscode, Inc.
+-# Copyright:: Copyright (c) 2014 GitLab.com
+-# License:: Apache License, Version 2.0
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-#
+-account_helper = AccountHelper.new(node)
+-
+-postgresql_dir = node['gitlab']['postgresql']['dir']
+-postgresql_data_dir = node['gitlab']['postgresql']['data_dir']
+-postgresql_data_dir_symlink = File.join(postgresql_dir, "data")
+-postgresql_log_dir = node['gitlab']['postgresql']['log_directory']
+-postgresql_socket_dir = node['gitlab']['postgresql']['unix_socket_directory']
+-postgresql_user = account_helper.postgresgl_user
+-
+-account "Postgresql user and group" do
+-  username postgresql_user
+-  uid node['gitlab']['postgresql']['uid']
+-  ugid postgresql_user
+-  groupname postgresql_user
+-  gid node['gitlab']['postgresql']['gid']
+-  shell node['gitlab']['postgresql']['shell']
+-  home node['gitlab']['postgresql']['home']
+-  manage node['gitlab']['manage-accounts']['enable']
+-end
+-
+-directory postgresql_dir do
+-  owner postgresql_user
+-  mode "0755"
+-  recursive true
+-end
+-
+-[
+-  postgresql_data_dir,
+-  postgresql_log_dir
+-].each do |dir|
+-  directory dir do
+-    owner postgresql_user
+-    mode "0700"
+-    recursive true
+-  end
+-end
+-
+-link postgresql_data_dir_symlink do
+-  to postgresql_data_dir
+-  not_if { postgresql_data_dir == postgresql_data_dir_symlink }
+-end
+-
+-file File.join(node['gitlab']['postgresql']['home'], ".profile") do
+-  owner postgresql_user
+-  mode "0600"
+-  content <<-EOH
+-PATH=#{node['gitlab']['postgresql']['user_path']}
+-EOH
+-end
+-
+-sysctl "kernel.shmmax" do
+-  value node['gitlab']['postgresql']['shmmax']
+-end
+-
+-sysctl "kernel.shmall" do
+-  value node['gitlab']['postgresql']['shmall']
+-end
+-
+-sem = "#{node['gitlab']['postgresql']['semmsl']} "
+-sem += "#{node['gitlab']['postgresql']['semmns']} "
+-sem += "#{node['gitlab']['postgresql']['semopm']} "
+-sem += "#{node['gitlab']['postgresql']['semmni']}"
+-sysctl "kernel.sem" do
+-  value sem
+-end
+-
+-execute "/opt/gitlab/embedded/bin/initdb -D #{postgresql_data_dir} -E UTF8" do
+-  user postgresql_user
+-  not_if { File.exists?(File.join(postgresql_data_dir, "PG_VERSION")) }
+-end
+-
+-postgresql_config = File.join(postgresql_data_dir, "postgresql.conf")
+-
+-template postgresql_config do
+-  source "postgresql.conf.erb"
+-  owner postgresql_user
+-  mode "0644"
+-  variables(node['gitlab']['postgresql'].to_hash)
+-  notifies :restart, 'service[postgresql]', :immediately if OmnibusHelper.should_notify?("postgresql")
+-end
+-
+-pg_hba_config = File.join(postgresql_data_dir, "pg_hba.conf")
+-
+-template pg_hba_config do
+-  source "pg_hba.conf.erb"
+-  owner postgresql_user
+-  mode "0644"
+-  variables(node['gitlab']['postgresql'].to_hash)
+-  notifies :restart, 'service[postgresql]', :immediately if OmnibusHelper.should_notify?("postgresql")
+-end
+-
+-template File.join(postgresql_data_dir, "pg_ident.conf") do
+-  owner postgresql_user
+-  mode "0644"
+-  variables(node['gitlab']['postgresql'].to_hash)
+-  notifies :restart, 'service[postgresql]' if OmnibusHelper.should_notify?("postgresql")
+-end
+-
+-should_notify = OmnibusHelper.should_notify?("postgresql")
+-
+-runit_service "postgresql" do
+-  down node['gitlab']['postgresql']['ha']
+-  control(['t'])
+-  options({
+-    :log_directory => postgresql_log_dir
+-  }.merge(params))
+-  log_options node['gitlab']['logging'].to_hash.merge(node['gitlab']['postgresql'].to_hash)
+-end
+-
+-if node['gitlab']['bootstrap']['enable']
+-  execute "/opt/gitlab/bin/gitlab-ctl start postgresql" do
+-    retries 20
+-  end
+-end
+-
+-###
+-# Create the database, migrate it, and create the users we need, and grant them
+-# privileges.
+-###
+-
+-# This template is needed to make the gitlab-psql script and PgHelper work
+-template "/opt/gitlab/etc/gitlab-psql-rc" do
+-  owner 'root'
+-  group 'root'
+-end
+-
+-pg_helper = PgHelper.new(node)
+-pg_port = node['gitlab']['postgresql']['port']
+-database_name = node['gitlab']['gitlab-rails']['db_database']
+-gitlab_sql_user = node['gitlab']['postgresql']['sql_user']
+-sql_replication_user = node['gitlab']['postgresql']['sql_replication_user']
+-
+-
+-if node['gitlab']['gitlab-rails']['enable']
+-  execute "create #{gitlab_sql_user} database user" do
+-    command "/opt/gitlab/bin/gitlab-psql -d template1 -c \"CREATE USER #{gitlab_sql_user}\""
+-    user postgresql_user
+-    # Added retries to give the service time to start on slower systems
+-    retries 20
+-    not_if { !pg_helper.is_running? || pg_helper.user_exists?(gitlab_sql_user) }
+-  end
+-
+-  execute "create #{database_name} database" do
+-    command "/opt/gitlab/embedded/bin/createdb --port #{pg_port} -h #{postgresql_socket_dir} -O #{gitlab_sql_user} #{database_name}"
+-    user postgresql_user
+-    retries 30
+-    not_if { !pg_helper.is_running? || pg_helper.database_exists?(database_name) }
+-  end
+-
+-  execute "create #{sql_replication_user} replication user" do
+-    command "/opt/gitlab/bin/gitlab-psql -d template1 -c \"CREATE USER #{sql_replication_user} REPLICATION\""
+-    user postgresql_user
+-    # Added retries to give the service time to start on slower systems
+-    retries 20
+-    not_if { !pg_helper.is_running? || pg_helper.user_exists?(sql_replication_user) }
+-  end
+-end
+-
+-execute "enable pg_trgm extension" do
+-  command "/opt/gitlab/bin/gitlab-psql -d #{database_name} -c \"CREATE EXTENSION IF NOT EXISTS pg_trgm;\""
+-  user postgresql_user
+-  retries 20
+-  action :nothing
+-  not_if { !pg_helper.is_running? || pg_helper.is_slave? }
+-end
+diff --git a/files/gitlab-cookbooks/gitlab/recipes/postgresql_disable.rb b/files/gitlab-cookbooks/gitlab/recipes/postgresql_disable.rb
+deleted file mode 100644
+index a187fbd..0000000
+--- a/files/gitlab-cookbooks/gitlab/recipes/postgresql_disable.rb
++++ /dev/null
+@@ -1,20 +0,0 @@
+-#
+-# Copyright:: Copyright (c) 2012 Opscode, Inc.
+-# License:: Apache License, Version 2.0
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-#
+-
+-runit_service "postgresql" do
+-  action :disable
+-end
+diff --git a/files/gitlab-cookbooks/gitlab/templates/default/gitlab-psql-rc.erb b/files/gitlab-cookbooks/gitlab/templates/default/gitlab-psql-rc.erb
+deleted file mode 100644
+index c3bc0e7..0000000
+--- a/files/gitlab-cookbooks/gitlab/templates/default/gitlab-psql-rc.erb
++++ /dev/null
+@@ -1,3 +0,0 @@
+-psql_user='<%= node['gitlab']['postgresql']['username'] %>'
+-psql_host='<%= node['gitlab']['postgresql']['unix_socket_directory'] %>'
+-psql_port='<%= node['gitlab']['postgresql']['port'] %>'
+diff --git a/files/gitlab-cookbooks/gitlab/templates/default/pg_hba.conf.erb b/files/gitlab-cookbooks/gitlab/templates/default/pg_hba.conf.erb
+deleted file mode 100644
+index 4870bd4..0000000
+--- a/files/gitlab-cookbooks/gitlab/templates/default/pg_hba.conf.erb
++++ /dev/null
+@@ -1,80 +0,0 @@
+-# This file is managed by gitlab-ctl. Manual changes will be
+-# erased! To change the contents below, edit /etc/gitlab/gitlab.rb
+-# and run `sudo gitlab-ctl reconfigure`.
+-
+-# PostgreSQL Client Authentication Configuration File
+-# ===================================================
+-#
+-# Refer to the "Client Authentication" section in the
+-# PostgreSQL documentation for a complete description
+-# of this file.  A short synopsis follows.
+-#
+-# This file controls: which hosts are allowed to connect, how clients
+-# are authenticated, which PostgreSQL user names they can use, which
+-# databases they can access.  Records take one of these forms:
+-#
+-# local      DATABASE  USER  METHOD  [OPTION]
+-# host       DATABASE  USER  CIDR-ADDRESS  METHOD  [OPTION]
+-# hostssl    DATABASE  USER  CIDR-ADDRESS  METHOD  [OPTION]
+-# hostnossl  DATABASE  USER  CIDR-ADDRESS  METHOD  [OPTION]
+-#
+-# (The uppercase items must be replaced by actual values.)
+-#
+-# The first field is the connection type: "local" is a Unix-domain socket,
+-# "host" is either a plain or SSL-encrypted TCP/IP socket, "hostssl" is an
+-# SSL-encrypted TCP/IP socket, and "hostnossl" is a plain TCP/IP socket.
+-#
+-# DATABASE can be "all", "sameuser", "samerole", a database name, or
+-# a comma-separated list thereof.
+-#
+-# USER can be "all", a user name, a group name prefixed with "+", or
+-# a comma-separated list thereof.  In both the DATABASE and USER fields
+-# you can also write a file name prefixed with "@" to include names from
+-# a separate file.
+-#
+-# CIDR-ADDRESS specifies the set of hosts the record matches.
+-# It is made up of an IP address and a CIDR mask that is an integer
+-# (between 0 and 32 (IPv4) or 128 (IPv6) inclusive) that specifies
+-# the number of significant bits in the mask.  Alternatively, you can write
+-# an IP address and netmask in separate columns to specify the set of hosts.
+-#
+-# METHOD can be "trust", "reject", "md5", "crypt", "password", "gss", "sspi",
+-# "krb5", "ident", "pam" or "ldap".  Note that "password" sends passwords
+-# in clear text; "md5" is preferred since it sends encrypted passwords.
+-#
+-# OPTION is the ident map or the name of the PAM service, depending on METHOD.
+-#
+-# Database and user names containing spaces, commas, quotes and other special
+-# characters must be quoted. Quoting one of the keywords "all", "sameuser" or
+-# "samerole" makes the name lose its special character, and just match a
+-# database or username with that name.
+-#
+-# This file is read on server startup and when the postmaster receives
+-# a SIGHUP signal.  If you edit the file on a running system, you have
+-# to SIGHUP the postmaster for the changes to take effect.  You can use
+-# "pg_ctl reload" to do that.
+-
+-# Put your actual configuration here
+-# ----------------------------------
+-#
+-# If you want to allow non-local connections, you need to add more
+-# "host" records. In that case you will also need to make PostgreSQL listen
+-# on a non-local interface via the listen_addresses configuration parameter,
+-# or via the -i or -h command line switches.
+-#
+-
+-
+-# TYPE  DATABASE    USER        CIDR-ADDRESS          METHOD
+-
+-# "local" is for Unix domain socket connections only
+-local   all         all                               peer map=gitlab
+-
+-<% node['gitlab']['postgresql']['trust_auth_cidr_addresses'].each do |cidr| %>
+-host    all         all         <%= cidr %>           trust
+-<% end %>
+-
+-<% node['gitlab']['postgresql']['md5_auth_cidr_addresses'].each do |cidr| %>
+-host    all         all         <%= cidr %>           md5
+-host    replication <%= node['gitlab']['postgresql']['sql_replication_user'] %> <%= cidr %>     md5
+-<% end %>
+-
+diff --git a/files/gitlab-cookbooks/gitlab/templates/default/pg_ident.conf.erb b/files/gitlab-cookbooks/gitlab/templates/default/pg_ident.conf.erb
+deleted file mode 100644
+index fd62e65..0000000
+--- a/files/gitlab-cookbooks/gitlab/templates/default/pg_ident.conf.erb
++++ /dev/null
+@@ -1,47 +0,0 @@
+-# PostgreSQL User Name Maps
+-# =========================
+-#
+-# Refer to the PostgreSQL documentation, chapter "Client
+-# Authentication" for a complete description.  A short synopsis
+-# follows.
+-#
+-# This file controls PostgreSQL user name mapping.  It maps external
+-# user names to their corresponding PostgreSQL user names.  Records
+-# are of the form:
+-#
+-# MAPNAME  SYSTEM-USERNAME  PG-USERNAME
+-#
+-# (The uppercase quantities must be replaced by actual values.)
+-#
+-# MAPNAME is the (otherwise freely chosen) map name that was used in
+-# pg_hba.conf.  SYSTEM-USERNAME is the detected user name of the
+-# client.  PG-USERNAME is the requested PostgreSQL user name.  The
+-# existence of a record specifies that SYSTEM-USERNAME may connect as
+-# PG-USERNAME.
+-#
+-# If SYSTEM-USERNAME starts with a slash (/), it will be treated as a
+-# regular expression.  Optionally this can contain a capture (a
+-# parenthesized subexpression).  The substring matching the capture
+-# will be substituted for \1 (backslash-one) if present in
+-# PG-USERNAME.
+-#
+-# Multiple maps may be specified in this file and used by pg_hba.conf.
+-#
+-# No map names are defined in the default configuration.  If all
+-# system user names and PostgreSQL user names are the same, you don't
+-# need anything in this file.
+-#
+-# This file is read on server startup and when the postmaster receives
+-# a SIGHUP signal.  If you edit the file on a running system, you have
+-# to SIGHUP the postmaster for the changes to take effect.  You can
+-# use "pg_ctl reload" to do that.
+-
+-# Put your actual configuration here
+-# ----------------------------------
+-
+-# MAPNAME       SYSTEM-USERNAME         PG-USERNAME
+-gitlab  <%= node['gitlab']['user']['username'] %>  <%= node['gitlab']['postgresql']['sql_user'] %>
+-gitlab  <%= node['gitlab']['gitlab-ci']['username'] %>  <%= node['gitlab']['postgresql']['sql_ci_user'] %>
+-gitlab  <%= node['gitlab']['mattermost']['username'] %>  <%= node['gitlab']['postgresql']['sql_mattermost_user'] %>
+-# Default to a 1-1 mapping between system usernames and Postgres usernames
+-gitlab  /^(.*)$  \1
+diff --git a/files/gitlab-cookbooks/gitlab/templates/default/postgresql-init.erb b/files/gitlab-cookbooks/gitlab/templates/default/postgresql-init.erb
+deleted file mode 100755
+index 07ff9f4..0000000
+--- a/files/gitlab-cookbooks/gitlab/templates/default/postgresql-init.erb
++++ /dev/null
+@@ -1,29 +0,0 @@
+-#!/bin/sh
+-
+-#
+-# make postgresql stop/restart send sigint to terminate clients to postgresql
+-# immediately.
+-#
+-
+-RETVAL=0
+-
+-case "$1" in
+-  stop|force-stop)
+-    /opt/gitlab/embedded/bin/sv once postgresql
+-    /opt/gitlab/embedded/bin/sv interrupt postgresql
+-    RETVAL=$?
+-    ;;
+-  restart)
+-    /opt/gitlab/embedded/bin/sv once postgresql
+-    /opt/gitlab/embedded/bin/sv interrupt postgresql
+-    sleep 5
+-    /opt/gitlab/embedded/bin/sv start postgresql
+-    RETVAL=$?
+-    ;;
+-	*)
+-		/opt/gitlab/embedded/bin/sv $1 postgresql
+-    RETVAL=$?
+-esac
+-
+-exit $RETVAL
+-
+diff --git a/files/gitlab-cookbooks/gitlab/templates/default/postgresql.conf.erb b/files/gitlab-cookbooks/gitlab/templates/default/postgresql.conf.erb
+deleted file mode 100644
+index faf877d..0000000
+--- a/files/gitlab-cookbooks/gitlab/templates/default/postgresql.conf.erb
++++ /dev/null
+@@ -1,559 +0,0 @@
+-# This file is managed by gitlab-ctl. Manual changes will be
+-# erased! To change the contents below, edit /etc/gitlab/gitlab.rb
+-# and run `sudo gitlab-ctl reconfigure`.
+-
+-# -----------------------------
+-# PostgreSQL configuration file
+-# -----------------------------
+-#
+-# This file consists of lines of the form:
+-#
+-#   name = value
+-#
+-# (The "=" is optional.)  Whitespace may be used.  Comments are introduced with
+-# "#" anywhere on a line.  The complete list of parameter names and allowed
+-# values can be found in the PostgreSQL documentation.
+-#
+-# The commented-out settings shown in this file represent the default values.
+-# Re-commenting a setting is NOT sufficient to revert it to the default value;
+-# you need to reload the server.
+-#
+-# This file is read on server startup and when the server receives a SIGHUP
+-# signal.  If you edit the file on a running system, you have to SIGHUP the
+-# server for the changes to take effect, or use "pg_ctl reload".  Some
+-# parameters, which are marked below, require a server shutdown and restart to
+-# take effect.
+-#
+-# Any parameter can also be given as a command-line option to the server, e.g.,
+-# "postgres -c log_connections=on".  Some parameters can be changed at run time
+-# with the "SET" SQL command.
+-#
+-# Memory units:  kB = kilobytes        Time units:  ms  = milliseconds
+-#                MB = megabytes                     s   = seconds
+-#                GB = gigabytes                     min = minutes
+-#                                                   h   = hours
+-#                                                   d   = days
+-
+-
+-#------------------------------------------------------------------------------
+-# FILE LOCATIONS
+-#------------------------------------------------------------------------------
+-
+-# The default values of these variables are driven from the -D command-line
+-# option or PGDATA environment variable, represented here as ConfigDir.
+-
+-#data_directory = 'ConfigDir'   # use data in another directory
+-          # (change requires restart)
+-#hba_file = 'ConfigDir/pg_hba.conf' # host-based authentication file
+-          # (change requires restart)
+-#ident_file = 'ConfigDir/pg_ident.conf' # ident configuration file
+-          # (change requires restart)
+-
+-# If external_pid_file is not explicitly set, no extra PID file is written.
+-#external_pid_file = '(none)'   # write an extra PID file
+-          # (change requires restart)
+-
+-
+-#------------------------------------------------------------------------------
+-# CONNECTIONS AND AUTHENTICATION
+-#------------------------------------------------------------------------------
+-
+-# - Connection Settings -
+-
+-listen_addresses = '<%= node['gitlab']['postgresql']['listen_address'] %>'    # what IP address(es) to listen on;
+-          # comma-separated list of addresses;
+-          # defaults to 'localhost', '*' = all
+-          # (change requires restart)
+-port = <%= node['gitlab']['postgresql']['port'] %>        # (change requires restart)
+-max_connections = <%= node['gitlab']['postgresql']['max_connections'] %>      # (change requires restart)
+-# Note:  Increasing max_connections costs ~400 bytes of shared memory per
+-# connection slot, plus lock space (see max_locks_per_transaction).
+-#superuser_reserved_connections = 3 # (change requires restart)
+-unix_socket_directory = '<%= node['gitlab']['postgresql']['unix_socket_directory'] %>'   # (change requires restart)
+-#unix_socket_group = ''     # (change requires restart)
+-#unix_socket_permissions = 0777   # begin with 0 to use octal notation
+-          # (change requires restart)
+-#bonjour = off        # advertise server via Bonjour
+-          # (change requires restart)
+-#bonjour_name = ''      # defaults to the computer name
+-          # (change requires restart)
+-
+-# - Security and Authentication -
+-
+-#authentication_timeout = 1min    # 1s-600s
+-#ssl = off        # (change requires restart)
+-#ssl_ciphers = 'ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH'  # allowed SSL ciphers
+-          # (change requires restart)
+-#ssl_renegotiation_limit = 512MB  # amount of data between renegotiations
+-#password_encryption = on
+-#db_user_namespace = off
+-
+-# Kerberos and GSSAPI
+-#krb_server_keyfile = ''
+-#krb_srvname = 'postgres'   # (Kerberos only)
+-#krb_caseins_users = off
+-
+-# - TCP Keepalives -
+-# see "man 7 tcp" for details
+-
+-#tcp_keepalives_idle = 0    # TCP_KEEPIDLE, in seconds;
+-          # 0 selects the system default
+-#tcp_keepalives_interval = 0    # TCP_KEEPINTVL, in seconds;
+-          # 0 selects the system default
+-#tcp_keepalives_count = 0   # TCP_KEEPCNT;
+-          # 0 selects the system default
+-
+-
+-#------------------------------------------------------------------------------
+-# RESOURCE USAGE (except WAL)
+-#------------------------------------------------------------------------------
+-
+-# - Memory -
+-
+-shared_buffers = <%= node['gitlab']['postgresql']['shared_buffers'] %> # min 128kB
+-          # (change requires restart)
+-#temp_buffers = 8MB     # min 800kB
+-#max_prepared_transactions = 0    # zero disables the feature
+-          # (change requires restart)
+-# Note:  Increasing max_prepared_transactions costs ~600 bytes of shared memory
+-# per transaction slot, plus lock space (see max_locks_per_transaction).
+-# It is not advisable to set max_prepared_transactions nonzero unless you
+-# actively intend to use prepared transactions.
+-work_mem = <%= node['gitlab']['postgresql']['work_mem'] %>				# min 64kB
+-maintenance_work_mem = <%= node['gitlab']['postgresql']['maintenance_work_mem'] %> # 16MB    # min 1MB
+-#max_stack_depth = 2MB      # min 100kB
+-
+-# - Kernel Resource Usage -
+-
+-#max_files_per_process = 1000   # min 25
+-          # (change requires restart)
+-#shared_preload_libraries = ''    # (change requires restart)
+-
+-# - Cost-Based Vacuum Delay -
+-
+-#vacuum_cost_delay = 0ms    # 0-100 milliseconds
+-#vacuum_cost_page_hit = 1   # 0-10000 credits
+-#vacuum_cost_page_miss = 10   # 0-10000 credits
+-#vacuum_cost_page_dirty = 20    # 0-10000 credits
+-#vacuum_cost_limit = 200    # 1-10000 credits
+-
+-# - Background Writer -
+-
+-#bgwriter_delay = 200ms     # 10-10000ms between rounds
+-#bgwriter_lru_maxpages = 100    # 0-1000 max buffers written/round
+-#bgwriter_lru_multiplier = 2.0    # 0-10.0 multipler on buffers scanned/round
+-
+-# - Asynchronous Behavior -
+-
+-#effective_io_concurrency = 1   # 1-1000. 0 disables prefetching
+-
+-
+-#------------------------------------------------------------------------------
+-# WRITE AHEAD LOG
+-#------------------------------------------------------------------------------
+-
+-# - Settings -
+-
+-wal_level = <%= node['gitlab']['postgresql']['wal_level'] %>
+-          # (change requires restart)
+-#fsync = on       # turns forced synchronization on or off
+-#synchronous_commit = on    # synchronization level; on, off, or local
+-#wal_sync_method = fsync    # the default is the first option
+-          # supported by the operating system:
+-          #   open_datasync
+-          #   fdatasync (default on Linux)
+-          #   fsync
+-          #   fsync_writethrough
+-          #   open_sync
+-#full_page_writes = on      # recover from partial page writes
+-wal_buffers = <%= node['gitlab']['postgresql']['wal_buffers'] %> # -1     # min 32kB, -1 sets based on shared_buffers
+-          # (change requires restart)
+-#wal_writer_delay = 200ms   # 1-10000 milliseconds
+-
+-#commit_delay = 0     # range 0-100000, in microseconds
+-#commit_siblings = 5      # range 1-1000
+-
+-# - Checkpoints -
+-
+-checkpoint_segments = <%= node['gitlab']['postgresql']['checkpoint_segments'] %>		# in logfile segments, min 1, 16MB each, default 3
+-checkpoint_timeout = <%= node['gitlab']['postgresql']['checkpoint_timeout'] %>		# range 30s-1h, default 5min
+-checkpoint_completion_target = <%= node['gitlab']['postgresql']['checkpoint_completion_target'] %>	# checkpoint target duration, 0.0 - 1.0, default 0.5
+-checkpoint_warning = <%= node['gitlab']['postgresql']['checkpoint_warning'] %>		# 0 disables, default 30s
+-
+-# - Archiving -
+-
+-#archive_mode = off   # allows archiving to be done
+-        # (change requires restart)
+-#archive_command = ''   # command to use to archive a logfile segment
+-#archive_timeout = 0    # force a logfile segment switch after this
+-        # number of seconds; 0 disables
+-
+-
+-#------------------------------------------------------------------------------
+-# REPLICATION
+-#------------------------------------------------------------------------------
+-
+-# - Master Server -
+-
+-# These settings are ignored on a standby server
+-
+-max_wal_senders = <%= node['gitlab']['postgresql']['max_wal_senders'] %>
+-        # (change requires restart)
+-#wal_sender_delay = 1s    # walsender cycle time, 1-10000 milliseconds
+-wal_keep_segments = <%= node['gitlab']['postgresql']['wal_keep_segments'] %>
+-#vacuum_defer_cleanup_age = 0 # number of xacts by which cleanup is delayed
+-#replication_timeout = 60s  # in milliseconds; 0 disables
+-#synchronous_standby_names = '' # standby servers that provide sync rep
+-        # comma-separated list of application_name
+-        # from standby(s); '*' = all
+-
+-# - Standby Servers -
+-
+-# These settings are ignored on a master server
+-
+-hot_standby = <%= node['gitlab']['postgresql']['hot_standby'] %>
+-          # (change requires restart)
+-#max_standby_archive_delay = 30s  # max delay before canceling queries
+-          # when reading WAL from archive;
+-          # -1 allows indefinite delay
+-#max_standby_streaming_delay = 30s  # max delay before canceling queries
+-          # when reading streaming WAL;
+-          # -1 allows indefinite delay
+-#wal_receiver_status_interval = 10s # send replies at least this often
+-          # 0 disables
+-#hot_standby_feedback = off   # send info from standby to prevent
+-          # query conflicts
+-
+-
+-#------------------------------------------------------------------------------
+-# QUERY TUNING
+-#------------------------------------------------------------------------------
+-
+-# - Planner Method Configuration -
+-
+-#enable_bitmapscan = on
+-#enable_hashagg = on
+-#enable_hashjoin = on
+-#enable_indexscan = on
+-#enable_material = on
+-#enable_mergejoin = on
+-#enable_nestloop = on
+-#enable_seqscan = on
+-#enable_sort = on
+-#enable_tidscan = on
+-
+-# - Planner Cost Constants -
+-
+-#seq_page_cost = 1.0      # measured on an arbitrary scale
+-#random_page_cost = 4.0     # same scale as above
+-#cpu_tuple_cost = 0.01      # same scale as above
+-#cpu_index_tuple_cost = 0.005   # same scale as above
+-#cpu_operator_cost = 0.0025   # same scale as above
+-effective_cache_size = <%= node['gitlab']['postgresql']['effective_cache_size'] %> # Default 128MB
+-
+-# - Genetic Query Optimizer -
+-
+-#geqo = on
+-#geqo_threshold = 12
+-#geqo_effort = 5      # range 1-10
+-#geqo_pool_size = 0     # selects default based on effort
+-#geqo_generations = 0     # selects default based on effort
+-#geqo_selection_bias = 2.0    # range 1.5-2.0
+-#geqo_seed = 0.0      # range 0.0-1.0
+-
+-# - Other Planner Options -
+-
+-#default_statistics_target = 100  # range 1-10000
+-#constraint_exclusion = partition # on, off, or partition
+-#cursor_tuple_fraction = 0.1    # range 0.0-1.0
+-#from_collapse_limit = 8
+-#join_collapse_limit = 8    # 1 disables collapsing of explicit
+-          # JOIN clauses
+-
+-
+-#------------------------------------------------------------------------------
+-# ERROR REPORTING AND LOGGING
+-#------------------------------------------------------------------------------
+-
+-# - Where to Log -
+-
+-#log_destination = 'stderr'   # Valid values are combinations of
+-          # stderr, csvlog, syslog, and eventlog,
+-          # depending on platform.  csvlog
+-          # requires logging_collector to be on.
+-
+-# This is used when logging to stderr:
+-#logging_collector = off    # Enable capturing of stderr and csvlog
+-          # into log files. Required to be on for
+-          # csvlogs.
+-          # (change requires restart)
+-
+-# These are only used if logging_collector is on:
+-#log_directory = 'pg_log'   # directory where log files are written,
+-          # can be absolute or relative to PGDATA
+-#log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'  # log file name pattern,
+-          # can include strftime() escapes
+-#log_file_mode = 0600     # creation mode for log files,
+-          # begin with 0 to use octal notation
+-#log_truncate_on_rotation = off   # If on, an existing log file with the
+-          # same name as the new log file will be
+-          # truncated rather than appended to.
+-          # But such truncation only occurs on
+-          # time-driven rotation, not on restarts
+-          # or size-driven rotation.  Default is
+-          # off, meaning append to existing files
+-          # in all cases.
+-#log_rotation_age = 1d      # Automatic rotation of logfiles will
+-          # happen after that time.  0 disables.
+-#log_rotation_size = 10MB   # Automatic rotation of logfiles will
+-          # happen after that much log output.
+-          # 0 disables.
+-
+-# These are relevant when logging to syslog:
+-#syslog_facility = 'LOCAL0'
+-#syslog_ident = 'postgres'
+-
+-#silent_mode = off      # Run server silently.
+-          # DO NOT USE without syslog or
+-          # logging_collector
+-          # (change requires restart)
+-
+-
+-# - When to Log -
+-
+-#client_min_messages = notice   # values in order of decreasing detail:
+-          #   debug5
+-          #   debug4
+-          #   debug3
+-          #   debug2
+-          #   debug1
+-          #   log
+-          #   notice
+-          #   warning
+-          #   error
+-
+-#log_min_messages = warning   # values in order of decreasing detail:
+-          #   debug5
+-          #   debug4
+-          #   debug3
+-          #   debug2
+-          #   debug1
+-          #   info
+-          #   notice
+-          #   warning
+-          #   error
+-          #   log
+-          #   fatal
+-          #   panic
+-
+-#log_min_error_statement = error  # values in order of decreasing detail:
+-          #   debug5
+-          #   debug4
+-          #   debug3
+-          #   debug2
+-          #   debug1
+-          #   info
+-          #   notice
+-          #   warning
+-          #   error
+-          #   log
+-          #   fatal
+-          #   panic (effectively off)
+-
+-log_min_duration_statement = <%= @log_min_duration_statement %>  # -1 is disabled, 0 logs all statements
+-          # and their durations, > 0 logs only
+-          # statements running at least this number
+-          # of milliseconds
+-
+-
+-# - What to Log -
+-
+-#debug_print_parse = off
+-#debug_print_rewritten = off
+-#debug_print_plan = off
+-#debug_pretty_print = on
+-#log_checkpoints = off
+-#log_connections = off
+-#log_disconnections = off
+-#log_duration = off
+-#log_error_verbosity = default    # terse, default, or verbose messages
+-#log_hostname = off
+-#log_line_prefix = ''     # special values:
+-          #   %a = application name
+-          #   %u = user name
+-          #   %d = database name
+-          #   %r = remote host and port
+-          #   %h = remote host
+-          #   %p = process ID
+-          #   %t = timestamp without milliseconds
+-          #   %m = timestamp with milliseconds
+-          #   %i = command tag
+-          #   %e = SQL state
+-          #   %c = session ID
+-          #   %l = session line number
+-          #   %s = session start timestamp
+-          #   %v = virtual transaction ID
+-          #   %x = transaction ID (0 if none)
+-          #   %q = stop here in non-session
+-          #        processes
+-          #   %% = '%'
+-#log_lock_waits = off     # log lock waits >= deadlock_timeout
+-#log_statement = 'none'     # none, ddl, mod, all
+-#log_temp_files = -1      # log temporary files equal or larger
+-          # than the specified size in kilobytes;
+-          # -1 disables, 0 logs all temp files
+-#log_timezone = '(defaults to server environment setting)'
+-
+-
+-#------------------------------------------------------------------------------
+-# RUNTIME STATISTICS
+-#------------------------------------------------------------------------------
+-
+-# - Query/Index Statistics Collector -
+-
+-#track_activities = on
+-#track_counts = on
+-#track_functions = none     # none, pl, all
+-track_activity_query_size = <%= node['gitlab']['postgresql']['track_activity_query_size'] %> # (change requires restart)
+-#update_process_title = on
+-#stats_temp_directory = 'pg_stat_tmp'
+-
+-
+-# - Statistics Monitoring -
+-
+-#log_parser_stats = off
+-#log_planner_stats = off
+-#log_executor_stats = off
+-#log_statement_stats = off
+-
+-
+-#------------------------------------------------------------------------------
+-# AUTOVACUUM PARAMETERS
+-#------------------------------------------------------------------------------
+-
+-autovacuum = <%= node['gitlab']['postgresql']['autovacuum'] %> # Enable autovacuum subprocess?  'on'
+-          # requires track_counts to also be on.
+-log_autovacuum_min_duration = <%= node['gitlab']['postgresql']['log_autovacuum_min_duration'] %> # -1 disables, 0 logs all actions and
+-          # their durations, > 0 logs only
+-          # actions running at least this number
+-          # of milliseconds.
+-autovacuum_max_workers = <%= node['gitlab']['postgresql']['autovacuum_max_workers'] %> # max number of autovacuum subprocesses
+-          # (change requires restart)
+-autovacuum_naptime = <%= node['gitlab']['postgresql']['autovacuum_naptime'] %> # time between autovacuum runs
+-autovacuum_vacuum_threshold = <%= node['gitlab']['postgresql']['autovacuum_vacuum_threshold'] %> # min number of row updates before
+-          # vacuum
+-autovacuum_analyze_threshold = <%= node['gitlab']['postgresql']['autovacuum_analyze_threshold'] %> # min number of row updates before
+-          # analyze
+-autovacuum_vacuum_scale_factor = <%= node['gitlab']['postgresql']['autovacuum_vacuum_scale_factor'] %> # fraction of table size before vacuum
+-autovacuum_analyze_scale_factor = <%= node['gitlab']['postgresql']['autovacuum_analyze_scale_factor'] %> # fraction of table size before analyze
+-autovacuum_freeze_max_age = <%= node['gitlab']['postgresql']['autovacuum_freeze_max_age'] %>  # maximum XID age before forced vacuum
+-          # (change requires restart)
+-autovacuum_vacuum_cost_delay = <%= node['gitlab']['postgresql']['autovacuum_vacuum_cost_delay'] %> # default vacuum cost delay for
+-          # autovacuum, in milliseconds;
+-          # -1 means use vacuum_cost_delay
+-autovacuum_vacuum_cost_limit = <%= node['gitlab']['postgresql']['autovacuum_vacuum_cost_limit'] %> # default vacuum cost limit for
+-          # autovacuum, -1 means use
+-          # vacuum_cost_limit
+-
+-
+-#------------------------------------------------------------------------------
+-# CLIENT CONNECTION DEFAULTS
+-#------------------------------------------------------------------------------
+-
+-# - Statement Behavior -
+-
+-#search_path = '"$user",public'   # schema names
+-#default_tablespace = ''    # a tablespace name, '' uses the default
+-#temp_tablespaces = ''      # a list of tablespace names, '' uses
+-          # only default tablespace
+-#check_function_bodies = on
+-#default_transaction_isolation = 'read committed'
+-#default_transaction_read_only = off
+-#default_transaction_deferrable = off
+-#session_replication_role = 'origin'
+-statement_timeout = <%= node['gitlab']['postgresql']['statement_timeout'] %>
+-#vacuum_freeze_min_age = 50000000
+-#vacuum_freeze_table_age = 150000000
+-#bytea_output = 'hex'     # hex, escape
+-#xmlbinary = 'base64'
+-#xmloption = 'content'
+-
+-# - Locale and Formatting -
+-
+-datestyle = 'iso, mdy'
+-#intervalstyle = 'postgres'
+-#timezone = '(defaults to server environment setting)'
+-#timezone_abbreviations = 'Default'     # Select the set of available time zone
+-          # abbreviations.  Currently, there are
+-          #   Default
+-          #   Australia
+-          #   India
+-          # You can create your own file in
+-          # share/timezonesets/.
+-#extra_float_digits = 0     # min -15, max 3
+-#client_encoding = sql_ascii    # actually, defaults to database
+-          # encoding
+-
+-# These settings are initialized by initdb, but they can be changed.
+-lc_messages = 'C'     # locale for system error message
+-          # strings
+-lc_monetary = 'C'     # locale for monetary formatting
+-lc_numeric = 'C'      # locale for number formatting
+-lc_time = 'C'       # locale for time formatting
+-
+-# default configuration for text search
+-default_text_search_config = 'pg_catalog.english'
+-
+-# - Other Defaults -
+-
+-#dynamic_library_path = '$libdir'
+-#local_preload_libraries = ''
+-
+-
+-#------------------------------------------------------------------------------
+-# LOCK MANAGEMENT
+-#------------------------------------------------------------------------------
+-
+-#deadlock_timeout = 1s
+-#max_locks_per_transaction = 64   # min 10
+-          # (change requires restart)
+-# Note:  Each lock table slot uses ~270 bytes of shared memory, and there are
+-# max_locks_per_transaction * (max_connections + max_prepared_transactions)
+-# lock table slots.
+-#max_pred_locks_per_transaction = 64  # min 10
+-          # (change requires restart)
+-
+-#------------------------------------------------------------------------------
+-# VERSION/PLATFORM COMPATIBILITY
+-#------------------------------------------------------------------------------
+-
+-# - Previous PostgreSQL Versions -
+-
+-#array_nulls = on
+-#backslash_quote = safe_encoding  # on, off, or safe_encoding
+-#default_with_oids = off
+-#escape_string_warning = on
+-#lo_compat_privileges = off
+-#quote_all_identifiers = off
+-#sql_inheritance = on
+-#standard_conforming_strings = on
+-#synchronize_seqscans = on
+-
+-# - Other Platforms and Clients -
+-
+-#transform_null_equals = off
+-
+-
+-#------------------------------------------------------------------------------
+-# ERROR HANDLING
+-#------------------------------------------------------------------------------
+-
+-#exit_on_error = off        # terminate session on any error?
+-#restart_after_crash = on     # reinitialize after backend crash?
+-
+-
+-#------------------------------------------------------------------------------
+-# CUSTOMIZED OPTIONS
+-#------------------------------------------------------------------------------
+-
+-#custom_variable_classes = ''   # list of custom variable class names
+diff --git a/files/gitlab-cookbooks/gitlab/templates/default/remote_syslog.yml.erb b/files/gitlab-cookbooks/gitlab/templates/default/remote_syslog.yml.erb
+index 725b917..e155ac2 100644
+--- a/files/gitlab-cookbooks/gitlab/templates/default/remote_syslog.yml.erb
++++ b/files/gitlab-cookbooks/gitlab/templates/default/remote_syslog.yml.erb
+@@ -3,7 +3,7 @@ files:
+   - <%= File.join(node['gitlab'][service]['log_directory'], "*.log") %>
+ <% end %>
+ exclude_files:
+-  # /var/log/gitlab-rails/sidekiq.log is a symlink to /var/log/sidekiq/current,
++  # /opt/logs/gitlab-rails/sidekiq.log is a symlink to /var/log/sidekiq/current,
+   # which should already be being shipped off-site by svlogd. Exclude it from
+   # remote_syslog to avoid duplicate log entries on the syslog server.
+   - <%= File.join(node['gitlab']['gitlab-rails']['log_directory'], "sidekiq.log") %>
+diff --git a/files/gitlab-cookbooks/gitlab/templates/default/sv-postgresql-control-t.erb b/files/gitlab-cookbooks/gitlab/templates/default/sv-postgresql-control-t.erb
+deleted file mode 100644
+index 342a197..0000000
+--- a/files/gitlab-cookbooks/gitlab/templates/default/sv-postgresql-control-t.erb
++++ /dev/null
+@@ -1,3 +0,0 @@
+-#!/bin/sh
+-echo "received TERM from runit, sending INT instead to force quit connections"
+-/opt/gitlab/embedded/bin/sv interrupt postgresql
+diff --git a/files/gitlab-cookbooks/gitlab/templates/default/sv-postgresql-log-config.erb b/files/gitlab-cookbooks/gitlab/templates/default/sv-postgresql-log-config.erb
+deleted file mode 100644
+index 8902097..0000000
+--- a/files/gitlab-cookbooks/gitlab/templates/default/sv-postgresql-log-config.erb
++++ /dev/null
+@@ -1,6 +0,0 @@
+-<%= "s#@svlogd_size" if @svlogd_size %>
+-<%= "n#@svlogd_num" if @svlogd_num %>
+-<%= "t#@svlogd_timeout" if @svlogd_timeout %>
+-<%= "!#@svlogd_filter" if @svlogd_filter %>
+-<%= "u#@svlogd_udp" if @svlogd_udp %>
+-<%= "p#@svlogd_prefix" if @svlogd_prefix %>
+diff --git a/files/gitlab-cookbooks/gitlab/templates/default/sv-postgresql-log-run.erb b/files/gitlab-cookbooks/gitlab/templates/default/sv-postgresql-log-run.erb
+deleted file mode 100644
+index c8ab3e3..0000000
+--- a/files/gitlab-cookbooks/gitlab/templates/default/sv-postgresql-log-run.erb
++++ /dev/null
+@@ -1,2 +0,0 @@
+-#!/bin/sh
+-exec svlogd -tt <%= @options[:log_directory] %>
+diff --git a/files/gitlab-cookbooks/gitlab/templates/default/sv-postgresql-run.erb b/files/gitlab-cookbooks/gitlab/templates/default/sv-postgresql-run.erb
+deleted file mode 100644
+index 0d54f45..0000000
+--- a/files/gitlab-cookbooks/gitlab/templates/default/sv-postgresql-run.erb
++++ /dev/null
+@@ -1,4 +0,0 @@
+-#!/bin/sh
+-exec 2>&1
+-<%= render("mount_point_check.erb") %>
+-exec chpst -P -U <%= node['gitlab']['postgresql']['username'] %> -u <%= node['gitlab']['postgresql']['username'] %> /opt/gitlab/embedded/bin/postgres -D <%= File.join(node['gitlab']['postgresql']['dir'], "data") %>
+diff --git a/files/gitlab-cookbooks/solo.rb b/files/gitlab-cookbooks/solo.rb
+index f91641f..8c2ec71 100644
+--- a/files/gitlab-cookbooks/solo.rb
++++ b/files/gitlab-cookbooks/solo.rb
+@@ -5,7 +5,7 @@ cookbook_path CURRENT_PATH
+ cache_path "#{CURRENT_PATH}/cache"
+ verbose_logging false
+ ssl_verify_mode :verify_peer
+-log_location "/var/log/gitlab/reconfigure/#{TIME}.log"
++log_location "/opt/logs/gitlab/reconfigure/#{TIME}.log"
+ log_level :info
+ # Omnibus-GitLab only needs to know very little about the system it is running
+ # on. We want to disable as many Ohai plugins as we can to avoid plugin bugs
+diff --git a/files/gitlab-ctl-commands/upgrade.rb b/files/gitlab-ctl-commands/upgrade.rb
+index 0affe8e..9020acf 100644
+--- a/files/gitlab-ctl-commands/upgrade.rb
++++ b/files/gitlab-ctl-commands/upgrade.rb
+@@ -35,7 +35,7 @@ add_command 'upgrade', 'Run migrations after a package upgrade', 1 do |cmd_name|
+     run_sv_command_for_service('stop', sv_name)
+   end
+ 
+-  MIGRATION_SERVICES = %w{postgresql redis}
++  MIGRATION_SERVICES = %w{redis}
+   MIGRATION_SERVICES.each do |sv_name|
+     # If the service is disabled, e.g. because we are using an external
+     # Postgres server, then this command is a no-op.
