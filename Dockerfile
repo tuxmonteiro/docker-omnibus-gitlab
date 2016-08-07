@@ -24,3 +24,5 @@ RUN echo "Starting..."; \
 WORKDIR /root/omnibus-gitlab
 
 VOLUME ["/var/cache/omnibus", "/root/omnibus-gitlab/pkg"]
+
+ENTRYPOINT ["/bin/su", "-l", "root", "-c"]
