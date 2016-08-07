@@ -39,7 +39,7 @@ RUN echo "Starting..."; \
   git clone -b gitlaborg8.10.4+ce.0 https://github.com/tuxmonteiro/omnibus-gitlab.git /root/omnibus-gitlab; \
   mkdir -p /root/omnibus-gitlab/pkg; \
   cd /root/omnibus-gitlab; \
-  for p in /root/patches/*patch; do patch -p1 < $p; done
+  for p in /root/patches/*patch; do patch -p1 < $p; done; \
   bundle install --path=.bundle --binstubs; \
   sed -i "s%XXXX%$(ls -d /root/omnibus-gitlab/.bundle/ruby/*/bundler/gems/omnibus-* | grep -v software | sed 's|/root/omnibus-gitlab/.bundle/ruby/.*/bundler/gems/omnibus-||')%" /root/patches/post/whitelist.patch; \
   patch -p1 < /root/patches/post/whitelist.patch; \
