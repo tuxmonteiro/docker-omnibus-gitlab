@@ -1,0 +1,37 @@
+diff --git a/config/software/gitlab-rails.rb b/config/software/gitlab-rails.rb
+index 055afcd..1f08185 100644
+--- a/config/software/gitlab-rails.rb
++++ b/config/software/gitlab-rails.rb
+@@ -30,13 +30,11 @@ dependency "libxslt"
+ dependency "curl"
+ dependency "rsync"
+ dependency "libicu"
+-dependency "postgresql"
+ dependency "python-docutils"
+-dependency "krb5"
+ dependency "registry"
++dependency "mysql-client"
+ 
+ if EE
+-  dependency "mysql-client"
+   dependency "unzip"
+   dependency "gitlab-pages"
+ end
+@@ -54,15 +52,14 @@ build do
+   command "sed -i \"s/.*REVISION.*/REVISION = '$(git log --pretty=format:'%h' -n 1)'/\" config/initializers/2_app.rb"
+   command "echo $(git log --pretty=format:'%h' -n 1) > REVISION"
+ 
+-  bundle_without = %w{development test}
+-  bundle_without << "mysql" unless EE
++  bundle_without = %w{development test postgres aws kerbero}
+   bundle "config build.rugged --no-use-system-libraries", :env => env
+   bundle "install --without #{bundle_without.join(" ")} --path=#{install_dir}/embedded/service/gem --jobs #{workers} --retry 5", :env => env
+ 
+   # In order to precompile the assets, we need to get to a state where rake can
+   # load the Rails environment.
+   copy 'config/gitlab.yml.example', 'config/gitlab.yml'
+-  copy 'config/database.yml.postgresql', 'config/database.yml'
++  copy 'config/database.yml.mysql', 'config/database.yml'
+   copy 'config/secrets.yml.example', 'config/secrets.yml'
+ 
+   assets_precompile_env = {

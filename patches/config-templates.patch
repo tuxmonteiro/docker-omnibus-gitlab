@@ -1,0 +1,26 @@
+diff --git a/config/templates/package-scripts/postrm.erb b/config/templates/package-scripts/postrm.erb
+index d312c53..0af0413 100644
+--- a/config/templates/package-scripts/postrm.erb
++++ b/config/templates/package-scripts/postrm.erb
+@@ -18,7 +18,7 @@ else
+ fi
+ 
+ cleanup_symlinks() {
+-  binaries="gitlab-ctl gitlab-rake gitlab-rails gitlab-ci-rake gitlab-ci-rails gitlab-psql"
++  binaries="gitlab-ctl gitlab-rake gitlab-rails gitlab-ci-rake gitlab-ci-rails"
+   for binary in $binaries; do
+     rm -f $PREFIX/bin/$binary
+   done
+diff --git a/config/templates/package-scripts/preinst.erb b/config/templates/package-scripts/preinst.erb
+index 0243e7a..3bb5e3f 100644
+--- a/config/templates/package-scripts/preinst.erb
++++ b/config/templates/package-scripts/preinst.erb
+@@ -3,7 +3,7 @@
+ 
+ DEST_DIR=<%= install_dir %>
+ 
+-mkdir -p /var/log/gitlab/reconfigure
++mkdir -p /opt/logs/gitlab/reconfigure
+ 
+ skip_migrations_file=/etc/gitlab/skip-auto-migrations
+ 

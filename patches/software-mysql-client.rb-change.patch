@@ -1,0 +1,22 @@
+diff --git a/config/software/mysql-client.rb b/config/software/mysql-client.rb
+index d4c7a8b..b94ead0 100644
+--- a/config/software/mysql-client.rb
++++ b/config/software/mysql-client.rb
+@@ -16,14 +16,14 @@
+ # limitations under the License.
+ #
+ name "mysql-client"
+-default_version "5.5.37"
++default_version "5.6.31"
+ 
+ dependency "openssl"
+ dependency "zlib"
+ dependency "ncurses"
+ 
+-source  :url => "http://dev.mysql.com/get/Downloads/MySQL-5.5/mysql-5.5.37.tar.gz",
+-        :md5 => "bf1d80c66d4822ec6036300399a33c03"
++source  :url => "http://cdn.mysql.com/archives/mysql-5.6/mysql-5.6.31.tar.gz",
++        :md5 => "a2d1d89c85ee1f5b1059dbfc741f0b0d"
+ 
+ relative_path "mysql-#{version}"
+ 

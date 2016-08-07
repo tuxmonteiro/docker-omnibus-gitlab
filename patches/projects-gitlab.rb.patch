@@ -1,0 +1,56 @@
+diff --git a/config/projects/gitlab.rb b/config/projects/gitlab.rb
+index 155d29f..e4f55c3 100644
+--- a/config/projects/gitlab.rb
++++ b/config/projects/gitlab.rb
+@@ -28,8 +28,7 @@ if ee
+   conflict        "gitlab-ce"
+ else
+   name "gitlab-ce"
+-  description "GitLab Community Edition and GitLab CI "\
+-    "(including NGINX, Postgres, Redis)"
++  description "GitLab Community Edition and GitLab CI"
+   replace        "gitlab-ee"
+   conflict        "gitlab-ee"
+ end
+@@ -50,35 +49,34 @@ override :rubygems, version: 'v2.5.1'
+ override :'chef-gem', version: '12.10.24'
+ override :cacerts, version: '2016.04.20', source: { md5: '782dcde8f5d53b1b9e888fdf113c42b9' }
+ override :pip, version: '7.1.2', source: { md5: '3823d2343d9f3aaab21cf9c917710196' }
+-override :redis, version: '3.2.1', source: { md5: 'b311d4332326f1e6f86a461b4025636d' }
+ override :postgresql, version: '9.2.17', source: { md5: 'a75d4a82eae1edda04eda2e60656e74c' }
+ override :liblzma, version: '5.2.2', source: { md5: '7cf6a8544a7dae8e8106fdf7addfa28c' }
+ override :libxml2, version: '2.9.4', source: { md5: 'ae249165c173b1ff386ee8ad676815f5' }
+-override :pcre, version: '8.38', source: { md5: '8a353fe1450216b6655dfcf3561716d9' }
++override :pcre, version: '8.38', source: { md5: '8a353fe1450216b6655dfcf3561716d9', url: "http://ufpr.dl.sourceforge.net/project/pcre/pcre/8.38/pcre-8.38.tar.gz" }
+ override :expat, version: '2.1.1', source: { md5: '7380a64a8e3a9d66a9887b01d0d7ea81', url: "http://iweb.dl.sourceforge.net/project/expat/expat/2.1.1/expat-2.1.1.tar.bz2" }
+ 
+ # Openssh needs to be installed
+ runtime_dependency "openssh-server"
+ 
++# External libs
++runtime_dependency "libselinux"
++runtime_dependency "krb5-libs"
++runtime_dependency "sqlite"
++
+ # creates required build directories
+ dependency "preparation"
+ dependency "package-scripts"
+ 
+-dependency "git"
+-dependency "redis"
+-dependency "nginx"
+ dependency "chef-zero"
+ dependency "ohai"
+ dependency "chef-gem"
+ dependency "remote-syslog" if ee
+-dependency "logrotate"
+ dependency "runit"
+ dependency "nodejs"
+ dependency "gitlab-rails"
+ dependency "gitlab-shell"
+ dependency "gitlab-workhorse"
+ dependency "gitlab-ctl"
+-dependency "gitlab-psql"
+ dependency "gitlab-cookbooks"
+ dependency "gitlab-selinux"
+ dependency "gitlab-scripts"
