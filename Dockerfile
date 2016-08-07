@@ -35,8 +35,8 @@ RUN echo "Starting..."; \
   echo 'eval "$(rbenv init -)"' >> ~/.bash_profile; \
   source /root/.bash_profile; \
   git clone https://github.com/rbenv/ruby-build.git /root/.rbenv/plugins/ruby-build; \
-  rbenv install 2.1.2; \
-  rbenv global 2.1.2; \
+  rbenv install 2.1.8; \
+  rbenv global 2.1.8; \
   gem install --no-doc --no-ri bundler; \
   git clone -b gitlaborg8.10.4+ce.0 https://github.com/tuxmonteiro/omnibus-gitlab.git /root/omnibus-gitlab; \
   mkdir -p /root/omnibus-gitlab/pkg; \
