@@ -18,7 +18,9 @@ RUN echo "Starting..."; \
   source /root/.bash_profile; \
   bundle install --path=.bundle --binstubs; \
   sed -i "s%XXXX%$(ls -d /root/omnibus-gitlab/.bundle/ruby/*/bundler/gems/omnibus-* | grep -v software | sed 's|/root/omnibus-gitlab/.bundle/ruby/.*/bundler/gems/omnibus-||')%" /root/patches/post/health_check.rb-whitelist.patch; \
+  sed -i "s%YYYY%$(ls -d /root/omnibus-gitlab/.bundle/ruby/*/bundler/gems/omnibus-software-* | sed 's|/root/omnibus-gitlab/.bundle/ruby/.*/bundler/gems/omnibus-software-||')%" /root/patches/post/fix-runsvdir-start.erb.patch; \
   patch -p1 < /root/patches/post/health_check.rb-whitelist.patch; \
+  patch -p1 < /root/patches/post/fix-runsvdir-start.erb.patch;
   echo "Finished."
 
 WORKDIR /root/omnibus-gitlab
