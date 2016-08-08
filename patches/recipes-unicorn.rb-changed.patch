@@ -1,0 +1,12 @@
+diff --git a/files/gitlab-cookbooks/gitlab/recipes/unicorn.rb b/files/gitlab-cookbooks/gitlab/recipes/unicorn.rb
+index 2b8ba34..96fe9ac 100644
+--- a/files/gitlab-cookbooks/gitlab/recipes/unicorn.rb
++++ b/files/gitlab-cookbooks/gitlab/recipes/unicorn.rb
+@@ -22,7 +22,3 @@ unicorn_service 'unicorn' do
+   user account_helper.gitlab_user
+ end
+ 
+-sysctl "net.core.somaxconn" do
+-  value node['gitlab']['unicorn']['somaxconn']
+-end
+-

@@ -1,0 +1,10 @@
+diff --git a/files/gitlab-cookbooks/gitlab/templates/default/sv-mattermost-run.erb b/files/gitlab-cookbooks/gitlab/templates/default/sv-mattermost-run.erb
+index 1d0744a..43edd0e 100644
+--- a/files/gitlab-cookbooks/gitlab/templates/default/sv-mattermost-run.erb
++++ b/files/gitlab-cookbooks/gitlab/templates/default/sv-mattermost-run.erb
+@@ -1,4 +1,4 @@
+ #!/bin/sh
+ exec 2>&1
+ cd /opt/gitlab/embedded/service/mattermost
+-exec chpst -P -U <%= node['gitlab']['mattermost']['username'] %> -u <%= node['gitlab']['mattermost']['username'] %> /opt/gitlab/embedded/bin/mattermost -config /var/opt/gitlab/mattermost/config.json
++exec chpst -P -U <%= node['gitlab']['mattermost']['username'] %> -u <%= node['gitlab']['mattermost']['username'] %> /opt/gitlab/embedded/bin/mattermost -config /opt/gitlab/var/mattermost/config.json

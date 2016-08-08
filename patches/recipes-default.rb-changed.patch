@@ -1,0 +1,28 @@
+diff --git a/files/gitlab-cookbooks/gitlab/recipes/default.rb b/files/gitlab-cookbooks/gitlab/recipes/default.rb
+index 8efc721..b8ad439 100644
+--- a/files/gitlab-cookbooks/gitlab/recipes/default.rb
++++ b/files/gitlab-cookbooks/gitlab/recipes/default.rb
+@@ -36,11 +36,11 @@ if File.exists?("/etc/gitlab/gitlab.rb")
+ end
+ node.consume_attributes(Gitlab.generate_config(node['fqdn']))
+ 
+-if File.exists?("/var/opt/gitlab/bootstrapped")
++if File.exists?("/opt/gitlab/var/bootstrapped")
+ 	node.set['gitlab']['bootstrap']['enable'] = false
+ end
+ 
+-directory "/var/opt/gitlab" do
++directory "/opt/gitlab/var" do
+   owner "root"
+   group "root"
+   mode "0755"
+@@ -98,8 +98,7 @@ include_recipe "runit"
+ 
+ # Configure DB Services
+ [
+-  "redis",
+-  "postgresql" # Postgresql depends on Redis because of `rake db:seed_fu`
++  "redis"
+ ].each do |service|
+   if node["gitlab"][service]["enable"]
+     include_recipe "gitlab::#{service}"

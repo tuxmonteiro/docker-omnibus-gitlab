@@ -1,0 +1,13 @@
+diff --git a/files/gitlab-cookbooks/gitlab/recipes/bootstrap.rb b/files/gitlab-cookbooks/gitlab/recipes/bootstrap.rb
+index f576d65..d58fa84 100644
+--- a/files/gitlab-cookbooks/gitlab/recipes/bootstrap.rb
++++ b/files/gitlab-cookbooks/gitlab/recipes/bootstrap.rb
+@@ -16,7 +16,7 @@
+ # limitations under the License.
+ #
+ 
+-bootstrap_status_file = "/var/opt/gitlab/bootstrapped"
++bootstrap_status_file = "/opt/gitlab/var/bootstrapped"
+ 
+ file bootstrap_status_file do
+   owner "root"

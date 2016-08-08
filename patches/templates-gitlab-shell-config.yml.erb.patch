@@ -1,0 +1,13 @@
+diff --git a/files/gitlab-cookbooks/gitlab/templates/default/gitlab-shell-config.yml.erb b/files/gitlab-cookbooks/gitlab/templates/default/gitlab-shell-config.yml.erb
+index ac4a9f0..da618f7 100644
+--- a/files/gitlab-cookbooks/gitlab/templates/default/gitlab-shell-config.yml.erb
++++ b/files/gitlab-cookbooks/gitlab/templates/default/gitlab-shell-config.yml.erb
+@@ -21,7 +21,7 @@ auth_file: "<%= @authorized_keys %>"
+ 
+ # Redis settings used for pushing commit notices to gitlab
+ redis:
+-  bin: /opt/gitlab/embedded/bin/redis-cli
++  bin: /usr/bin/redis-cli
+   host: <%= @redis_host %>
+   port: <%= @redis_port %>
+ <% if @redis_socket %>
