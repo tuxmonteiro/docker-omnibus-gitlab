@@ -119,18 +119,6 @@ index 28b1815..28452fd 100644
  
  ##################
  # Registry NGINX #
-diff --git a/files/gitlab-cookbooks/gitlab/definitions/sysctl.rb b/files/gitlab-cookbooks/gitlab/definitions/sysctl.rb
-index 49b987e..f2ba69a 100644
---- a/files/gitlab-cookbooks/gitlab/definitions/sysctl.rb
-+++ b/files/gitlab-cookbooks/gitlab/definitions/sysctl.rb
-@@ -37,7 +37,6 @@ define :sysctl, value: nil do
- 
-   # Remove old (not-used) configs
-   [
--    "/etc/sysctl.d/90-postgresql.conf",
-     "/etc/sysctl.d/90-unicorn.conf",
-     "/opt/gitlab/embedded/etc/90-omnibus-gitlab.conf",
-     "/etc/sysctl.d/90-omnibus-gitlab.conf"
 diff --git a/files/gitlab-cookbooks/gitlab/libraries/gitlab.rb b/files/gitlab-cookbooks/gitlab/libraries/gitlab.rb
 index c73feb7..313809b 100644
 --- a/files/gitlab-cookbooks/gitlab/libraries/gitlab.rb
