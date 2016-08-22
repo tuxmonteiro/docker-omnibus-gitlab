@@ -8,10 +8,12 @@ USER root
 
 ENV RUBY_VER 2.1.2
 
+ENV GITLAB_BRANCH 8-10-stable
+
 COPY patches /root/patches
 
 RUN echo "Starting..."; \
-  git clone -b 8-10-stable https://github.com/gitlabhq/omnibus-gitlab.git /root/omnibus-gitlab; \
+  git clone -b ${GITLAB_BRANCH} https://github.com/gitlabhq/omnibus-gitlab.git /root/omnibus-gitlab; \
   mkdir -p /root/omnibus-gitlab/pkg; \
   cd /root/omnibus-gitlab; \
   for p in /root/patches/*patch; do patch -p1 < $p; done; \
